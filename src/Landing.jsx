@@ -46,7 +46,6 @@ export default function Landing() {
         body { margin: 0; background: #FFFFFF; }
         @keyframes fadeUp { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
         @keyframes livepulse { 0%,100%{ opacity:1; } 50%{ opacity:0.3; } }
-        @keyframes shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
         .landing-input:focus { outline: none; border-color: #37352F; }
         .landing-btn:hover { opacity: 0.88; }
         .landing-btn:active { transform: scale(0.98); }
@@ -77,7 +76,10 @@ export default function Landing() {
               ₿
             </span>
             <span style={{ fontSize: 13, fontWeight: 600, color: '#37352F' }}>
-              MMAR Dashboard
+              Bitcoin Signal
+            </span>
+            <span style={{ fontSize: 10, color: '#BFBFBA', fontWeight: 400 }}>
+              by CommonSense
             </span>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -121,10 +123,39 @@ export default function Landing() {
               maxWidth: 480,
             }}
           >
-            A quantitative answer. Not opinions, not charts, not vibes — just a
-            Power Law model, Mandelbrot's fractal math, and 500 simulated
-            futures telling you if the price is cheap, fair, or expensive right
-            now.
+            A clear answer based on math, not opinions. We analyze 15 years of
+            Bitcoin data and run 500 simulations to tell you if the price is
+            cheap, fair, or expensive right now — and what your actual risk is.
+          </p>
+          <p style={{ fontSize: 13, color: '#BFBFBA', marginTop: 14 }}>
+            Built by{' '}
+            <a
+              href="https://www.commonsense.finance/"
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                color: '#9B9A97',
+                fontWeight: 600,
+                textDecoration: 'none',
+                borderBottom: '1px dotted #BFBFBA',
+              }}
+            >
+              CommonSense
+            </a>{' '}
+            &{' '}
+            <a
+              href="https://www.linkedin.com/in/eduforte/"
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                color: '#9B9A97',
+                fontWeight: 600,
+                textDecoration: 'none',
+                borderBottom: '1px dotted #BFBFBA',
+              }}
+            >
+              Edu Forte
+            </a>
           </p>
         </div>
 
@@ -163,6 +194,7 @@ export default function Landing() {
                   textDecoration: 'underline',
                   cursor: 'pointer',
                   fontSize: 12,
+                  fontFamily: "'DM Sans', sans-serif",
                 }}
               >
                 try again
@@ -249,10 +281,10 @@ export default function Landing() {
           </div>
         )}
 
-        {/* ── What you get ── */}
+        {/* ── What you'll see (plain language) ── */}
         <div
           style={{
-            padding: '56px 0 40px',
+            padding: '56px 0 0',
             animation: 'fadeUp 0.6s ease-out 0.3s both',
           }}
         >
@@ -266,29 +298,29 @@ export default function Landing() {
               marginBottom: 20,
             }}
           >
-            What's inside
+            What you'll see
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             {[
               {
-                icon: '📐',
-                title: 'Power Law fair value',
-                desc: 'Is Bitcoin cheap or expensive right now? Measured against 15 years of structural growth data using Weighted Least Squares regression.',
-              },
-              {
-                icon: '🎲',
-                title: '500 simulated futures',
-                desc: "Monte Carlo paths built with Mandelbrot's fractal model — not smooth Gaussian curves, but realistic crashes, rallies, and volatility clustering.",
+                icon: '💬',
+                title: 'A straight answer: YES, NO, or WAIT',
+                desc: 'No ambiguity. The dashboard weighs 7 different signals and gives you one clear recommendation. Expand it to see exactly why.',
               },
               {
                 icon: '🛡️',
-                title: 'Loss probability by horizon',
-                desc: "If you buy today, what's your chance of being at a loss in 1 month, 3 months, 1 year, 3 years? Counted directly from simulated paths.",
+                title: 'Your actual risk of losing money',
+                desc: "If you buy today, what are your chances of being down in 1 month? 6 months? 1 year? 3 years? Not a guess — calculated from 500 simulated scenarios.",
               },
               {
-                icon: '💬',
-                title: 'YES / NO / CAUTIOUSLY',
-                desc: 'A composite score from 7 independent signals — valuation, risk-reward, loss probability, 30-day outlook, market regime, temperature, and trend persistence.',
+                icon: '🌡️',
+                title: 'Is Bitcoin cheap or expensive right now?',
+                desc: "A live gauge that shows where the current price sits relative to Bitcoin's long-term growth trend. Think of it as a thermometer: blue means undervalued, red means overheated.",
+              },
+              {
+                icon: '📖',
+                title: 'A plain-language explanation',
+                desc: 'Every number comes with a narrative that explains what it means in normal words. No jargon, no charts you need a PhD to read.',
               },
             ].map(({ icon, title, desc }) => (
               <div
@@ -326,15 +358,11 @@ export default function Landing() {
           </div>
         </div>
 
-        {/* ── Teaser numbers ── */}
+        {/* ── Under the hood (for quants) ── */}
         <div
           style={{
-            padding: '24px 28px',
-            background: '#FAFAF8',
-            border: '1px solid #E8E5E0',
-            borderRadius: 10,
-            marginBottom: 48,
-            animation: 'fadeUp 0.6s ease-out 0.45s both',
+            padding: '40px 0 40px',
+            animation: 'fadeUp 0.6s ease-out 0.4s both',
           }}
         >
           <div
@@ -344,63 +372,97 @@ export default function Landing() {
               color: '#BFBFBA',
               textTransform: 'uppercase',
               letterSpacing: '0.08em',
-              marginBottom: 16,
+              marginBottom: 20,
             }}
           >
-            Model specs
+            Under the hood
           </div>
           <div
             style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(3, 1fr)',
-              gap: 16,
-              textAlign: 'center',
+              padding: '20px 22px',
+              background: '#FAFAF8',
+              border: '1px solid #E8E5E0',
+              borderRadius: 10,
             }}
           >
-            {[
-              { value: '4,500+', label: 'daily data points' },
-              { value: '1,000', label: 'MC simulations' },
-              { value: '7', label: 'weighted signals' },
-            ].map(({ value, label }) => (
-              <div key={label}>
-                <div
-                  style={{
-                    fontSize: 22,
-                    fontWeight: 700,
-                    fontFamily: "'DM Mono', monospace",
-                    color: '#37352F',
-                  }}
-                >
-                  {value}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              {[
+                {
+                  label: 'Power Law regression',
+                  detail:
+                    'Weighted Least Squares on 15 years of daily data (4,500+ points). Same foundational model as Santostasi and Burger, with WLS for better handling of early illiquid data.',
+                },
+                {
+                  label: 'Fractal volatility',
+                  detail:
+                    "Mandelbrot's MMAR with Hurst exponent via DFA and multifractal partition function. Captures the fat tails and volatility clustering that Gaussian models miss entirely.",
+                },
+                {
+                  label: 'Regime-switching mean-reversion',
+                  detail:
+                    'Ornstein-Uhlenbeck process with two regimes (calm and volatile), each with its own reversion speed and volatility scale. Markov transitions between regimes.',
+                },
+                {
+                  label: 'Monte Carlo simulation',
+                  detail:
+                    "500 paths × 2 horizons (1Y and 3Y). Fractal cascades, empirical shock resampling, Hurst-correlated noise, regime-switching OU anchoring. Every shock actually occurred in Bitcoin's real history.",
+                },
+              ].map(({ label, detail }) => (
+                <div key={label}>
+                  <div
+                    style={{
+                      fontSize: 13,
+                      fontWeight: 600,
+                      color: '#37352F',
+                      marginBottom: 3,
+                    }}
+                  >
+                    {label}
+                  </div>
+                  <div
+                    style={{ fontSize: 12, color: '#9B9A97', lineHeight: 1.55 }}
+                  >
+                    {detail}
+                  </div>
                 </div>
-                <div style={{ fontSize: 11, color: '#9B9A97', marginTop: 4 }}>
-                  {label}
+              ))}
+            </div>
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(3, 1fr)',
+                gap: 16,
+                textAlign: 'center',
+                marginTop: 20,
+                paddingTop: 16,
+                borderTop: '1px solid #E8E5E0',
+              }}
+            >
+              {[
+                { value: '4,500+', label: 'daily data points' },
+                { value: '1,000', label: 'MC simulations' },
+                { value: '7', label: 'weighted signals' },
+              ].map(({ value, label }) => (
+                <div key={label}>
+                  <div
+                    style={{
+                      fontSize: 22,
+                      fontWeight: 700,
+                      fontFamily: "'DM Mono', monospace",
+                      color: '#37352F',
+                    }}
+                  >
+                    {value}
+                  </div>
+                  <div
+                    style={{ fontSize: 11, color: '#9B9A97', marginTop: 4 }}
+                  >
+                    {label}
+                  </div>
                 </div>
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
-        </div>
-
-        {/* ── Methodology one-liner ── */}
-        <div
-          style={{
-            borderTop: '1px solid #F1F1EF',
-            padding: '20px 0',
-            marginBottom: 20,
-            animation: 'fadeUp 0.6s ease-out 0.55s both',
-          }}
-        >
-          <p
-            style={{
-              fontSize: 12,
-              color: '#BFBFBA',
-              lineHeight: 1.6,
-              textAlign: 'center',
-            }}
-          >
-            Santostasi Power Law (WLS) · Mandelbrot MMAR (DFA) ·
-            Regime-Switching Ornstein-Uhlenbeck · Empirical Monte Carlo
-          </p>
         </div>
 
         {/* ── Footer ── */}
@@ -416,7 +478,6 @@ export default function Landing() {
           }}
         >
           <span style={{ fontSize: 11, color: '#BFBFBA' }}>
-            Built by{' '}
             <a
               href="https://www.commonsense.finance/"
               target="_blank"
@@ -442,6 +503,7 @@ export default function Landing() {
             >
               Edu Forte
             </a>
+            <span style={{ color: '#E8E5E0' }}> · Barcelona</span>
           </span>
           <span style={{ fontSize: 11, color: '#E8E5E0' }}>
             Not financial advice
