@@ -1924,7 +1924,7 @@ export default function MMARDashboard() {
   });
   const toggleSection = (key) => setOpenSections(prev => ({ ...prev, [key]: !prev[key] }));
 
-  const [plRange, setPlRange] = useState("2020");
+  const [plRange, setPlRange] = useState("2017");
 
   const tooltipStyle = {
     contentStyle: { background: "#FFF", border: "1px solid #E8E5E0", fontSize: 12, borderRadius: 6, color: "#37352F", boxShadow: "0 4px 12px rgba(0,0,0,0.08)", padding: "8px 12px" },
@@ -2069,8 +2069,9 @@ export default function MMARDashboard() {
           lPrice: +lprice.toFixed(4), lPl: +lpl.toFixed(4),
           lR2up: +(lpl + (resMean + 2 * resStd) / Math.LN10).toFixed(4),
           lR1up: +(lpl + (resMean + resStd) / Math.LN10).toFixed(4),
-          lR1dn: +(lpl + (resMean - resStd) / Math.LN10).toFixed(4),
-          lR2dn: +(lpl + resFloor / Math.LN10).toFixed(4),
+          lR05up: +(lpl + (resMean + 0.5 * resStd) / Math.LN10).toFixed(4),
+          lR05dn: +(lpl + (resMean - 0.5 * resStd) / Math.LN10).toFixed(4),
+          lSup: +(lpl + resFloor / Math.LN10).toFixed(4),
         };
       }).filter(Boolean);
 
@@ -2085,8 +2086,9 @@ export default function MMARDashboard() {
           date: fd.toISOString().slice(0, 7), logT: +Math.log10(tF).toFixed(4), lPl: +lplF.toFixed(4), lPrice: null,
           lR2up: +(lplF + (resMean + 2 * resStd) / Math.LN10).toFixed(4),
           lR1up: +(lplF + (resMean + resStd) / Math.LN10).toFixed(4),
-          lR1dn: +(lplF + (resMean - resStd) / Math.LN10).toFixed(4),
-          lR2dn: +(lplF + resFloor / Math.LN10).toFixed(4),
+          lR05up: +(lplF + (resMean + 0.5 * resStd) / Math.LN10).toFixed(4),
+          lR05dn: +(lplF + (resMean - 0.5 * resStd) / Math.LN10).toFixed(4),
+          lSup: +(lplF + resFloor / Math.LN10).toFixed(4),
         });
       }
 
@@ -2192,14 +2194,15 @@ export default function MMARDashboard() {
   const pl1yBands = {
     p2up: Math.exp(Math.log(pl1yFuture) + resMean + 2 * resStd),
     p1up: Math.exp(Math.log(pl1yFuture) + resMean + resStd),
+    p05up: Math.exp(Math.log(pl1yFuture) + resMean + 0.5 * resStd),
     fair: pl1yFuture,
-    p1dn: Math.exp(Math.log(pl1yFuture) + resMean - resStd),
-    p2dn: Math.exp(Math.log(pl1yFuture) + resFloor),
+    p05dn: Math.exp(Math.log(pl1yFuture) + resMean - 0.5 * resStd),
+    pSup: Math.exp(Math.log(pl1yFuture) + resFloor),
   };
-  const plUpside1y = ((pl1yBands.p1up - S0) / S0 * 100);
-  const plDownside1y = ((S0 - pl1yBands.p1dn) / S0 * 100);
+  const plUpside1y = ((pl1yBands.p05up - S0) / S0 * 100);
+  const plDownside1y = ((S0 - pl1yBands.p05dn) / S0 * 100);
   const plRR1y = plDownside1y > 0 ? plUpside1y / plDownside1y : 99;
-  const plWorstReturn1y = ((pl1yBands.p2dn - S0) / S0 * 100);
+  const plWorstReturn1y = ((pl1yBands.pSup - S0) / S0 * 100);
   const plBestReturn1y = ((pl1yBands.p2up - S0) / S0 * 100);
 
   // ── MC probabilistic: actual loss probability from simulated paths ──
@@ -2250,9 +2253,9 @@ export default function MMARDashboard() {
     const implRet = ((plF - S0) / S0 * 100);
     const p2up = Math.exp(Math.log(plF) + resMean + 2 * resStd);
     const p1up = Math.exp(Math.log(plF) + resMean + resStd);
-    const p1dn = Math.exp(Math.log(plF) + resMean - resStd);
-    const p2dn = Math.exp(Math.log(plF) + resFloor);
-    return { ...h, plF, implRet, p2up, p1up, p1dn, p2dn };
+    const p05dn = Math.exp(Math.log(plF) + resMean - 0.5 * resStd);
+    const pSup = Math.exp(Math.log(plF) + resFloor);
+    return { ...h, plF, implRet, p2up, p1up, p05dn, pSup };
   });
 
   // Market temperature: composite of sigma + vol + momentum
@@ -2415,7 +2418,7 @@ export default function MMARDashboard() {
     // Worst case
     const mcWorst1y = loss1y?.p5 ? ((loss1y.p5 - S0) / S0 * 100) : -50;
     const mcWorst3y = loss3y?.p5 ? ((loss3y.p5 - S0) / S0 * 100) : -30;
-    paras.push(`Worst case: the PL's accumulation floor in 1 year is ${fmtK(pl1yBands.p2dn)} (${plWorstReturn1y >= 0 ? "+" : ""}${plWorstReturn1y.toFixed(0)}%). The MC bottom 5% of paths: ${fmtK(loss1y?.p5 || S0 * 0.5)} (${mcWorst1y.toFixed(0)}%) in 1 year, ${fmtK(loss3y?.p5 || S0 * 0.5)} (${mcWorst3y >= 0 ? "+" : ""}${mcWorst3y.toFixed(0)}%) in 3 years.${mcWorst3y > 0 ? " Even the worst-case simulation is in profit at 3 years." : ""}`);
+    paras.push(`Worst case: the PL's support floor in 1 year is ${fmtK(pl1yBands.pSup)} (${plWorstReturn1y >= 0 ? "+" : ""}${plWorstReturn1y.toFixed(0)}%). The MC bottom 5% of paths: ${fmtK(loss1y?.p5 || S0 * 0.5)} (${mcWorst1y.toFixed(0)}%) in 1 year, ${fmtK(loss3y?.p5 || S0 * 0.5)} (${mcWorst3y >= 0 ? "+" : ""}${mcWorst3y.toFixed(0)}%) in 3 years.${mcWorst3y > 0 ? " Even the worst-case simulation is in profit at 3 years." : ""}`);
 
     // Short-term + regime + environment
     const regimeNote = domRegime.id === "bull" ? "in a bull run" : domRegime.id === "bear" ? "in a bear market" : domRegime.id === "accum" ? "in an accumulation phase" : domRegime.id === "recov" ? "in early recovery" : "in a ranging market";
@@ -2448,9 +2451,10 @@ export default function MMARDashboard() {
   const levels = [
     { label: "Bubble territory", price: +Math.exp(Math.log(plToday) + resMean + 2 * resStd).toFixed(0), color: "#EB5757", sigma: "+2σ" },
     { label: "Cycle ceiling", price: +Math.exp(Math.log(plToday) + resMean + resStd).toFixed(0), color: "#F2994A", sigma: "+1σ" },
+    { label: "Slightly overheated", price: +Math.exp(Math.log(plToday) + resMean + 0.5 * resStd).toFixed(0), color: "#E8A838", sigma: "+0.5σ" },
     { label: "Fair value (Power Law)", price: plToday, color: "#27AE60", sigma: "0" },
-    { label: "Normal correction floor", price: +Math.exp(Math.log(plToday) + resMean - resStd).toFixed(0), color: "#2F80ED", sigma: "−1σ" },
-    { label: "Deep accumulation zone", price: +Math.exp(Math.log(plToday) + resFloor).toFixed(0), color: "#56CCF2", sigma: `${resFloorSigma.toFixed(1)}σ` },
+    { label: "Mild discount", price: +Math.exp(Math.log(plToday) + resMean - 0.5 * resStd).toFixed(0), color: "#56CCF2", sigma: "−0.5σ" },
+    { label: "Support (RANSAC floor)", price: +Math.exp(Math.log(plToday) + resFloor).toFixed(0), color: "#2F80ED", sigma: `${resFloorSigma.toFixed(1)}σ` },
   ];
 
   // PL chart
@@ -2460,7 +2464,7 @@ export default function MMARDashboard() {
   // Sample for chart performance: all=every 7d, 2010/2017=every 3d, 2020+=every 2d, 2024+=every day
   const sampleRate = { "all": 7, "2010": 3, "2017": 3, "2020": 2, "2024": 1 }[plRange] || 2;
   const filteredPL = allFiltered.filter((_, i) => i % sampleRate === 0 || i === allFiltered.length - 1);
-  const allVals = filteredPL.flatMap(p => [p.lR2up, p.lR1up, p.lPl, p.lR1dn, p.lR2dn, p.lPrice].filter(v => v != null && isFinite(v)));
+  const allVals = filteredPL.flatMap(p => [p.lR2up, p.lR1up, p.lR05up, p.lPl, p.lR05dn, p.lSup, p.lPrice].filter(v => v != null && isFinite(v)));
   const autoMin = allVals.length ? Math.floor(Math.min(...allVals) * 2) / 2 : 3;
   const autoMax = allVals.length ? Math.ceil(Math.max(...allVals) * 2) / 2 + 0.5 : 7;
   const yTicks = [0, 1, 2, 3, 4, 5, 6, 7, 8].filter(t => t >= autoMin - 0.3 && t <= autoMax + 0.3);
@@ -2501,7 +2505,7 @@ export default function MMARDashboard() {
         .grid-mc-stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-bottom: 16px; }
         .grid-params { display: grid; grid-template-columns: 1fr; gap: 1px; background: #E8E5E0; border: 1px solid #E8E5E0; border-radius: 8px; overflow: hidden; }
         .grid-footer { grid-template-columns: 1fr; }
-        .chart-container { height: 280px; }
+        .chart-container { height: 340px; }
         .chart-container-sm { height: 180px; }
         .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
         .table-scroll table { min-width: 480px; }
@@ -2518,7 +2522,7 @@ export default function MMARDashboard() {
           .grid-mc-stats { grid-template-columns: repeat(4, 1fr); gap: 16px; }
           .grid-params { grid-template-columns: repeat(3, 1fr); }
           .grid-footer { grid-template-columns: 1fr 1fr; }
-          .chart-container { height: 400px; }
+          .chart-container { height: 480px; }
           .chart-container-sm { height: 220px; }
           .legend-row { gap: 16px; }
           .toggle-content { padding-left: 28px; }
@@ -2698,11 +2702,11 @@ export default function MMARDashboard() {
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 0, marginBottom: 14 }}>
                 {[
-                  { label: "Best case (+2σ)", price: pl1yBands.p2up, color: "#EB5757" },
+                  { label: "Bubble (+2σ)", price: pl1yBands.p2up, color: "#EB5757" },
                   { label: "Ceiling (+1σ)", price: pl1yBands.p1up, color: "#F2994A" },
                   { label: "Fair value", price: pl1yBands.fair, color: "#27AE60" },
-                  { label: "Support (−1σ)", price: pl1yBands.p1dn, color: "#2F80ED" },
-                  { label: `Accumulation (${resFloorSigma.toFixed(1)}σ)`, price: pl1yBands.p2dn, color: "#56CCF2" },
+                  { label: "Discount (−0.5σ)", price: pl1yBands.p05dn, color: "#56CCF2" },
+                  { label: "Support (floor)", price: pl1yBands.pSup, color: "#2F80ED" },
                 ].map(({ label, price, color }, i) => {
                   const pct = ((price - S0) / S0 * 100);
                   return (
@@ -2803,9 +2807,10 @@ export default function MMARDashboard() {
               {[
                 { color: "#EB5757", label: "Bubble (+2σ)", dash: false },
                 { color: "#F2994A", label: "Ceiling (+1σ)", dash: true },
+                { color: "#E8A838", label: "+0.5σ", dash: true },
                 { color: "#27AE60", label: "Fair Value", dash: false },
-                { color: "#2F80ED", label: "Support (−1σ)", dash: true },
-                { color: "#56CCF2", label: `Accumulation (${resFloorSigma.toFixed(1)}σ)`, dash: false },
+                { color: "#56CCF2", label: "−0.5σ", dash: true },
+                { color: "#2F80ED", label: "Support", dash: false },
                 { color: "#37352F", label: "BTC Price", dash: false },
               ].map(({ color, dash, label }) => (
                 <div key={label} style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -2824,9 +2829,10 @@ export default function MMARDashboard() {
                   {lastLogT && <ReferenceLine x={lastLogT} stroke="#E8E5E0" strokeDasharray="4 2" />}
                   <Line type="monotone" dataKey="lR2up" stroke="#EB5757" strokeWidth={1.2} dot={false} name="Bubble" connectNulls />
                   <Line type="monotone" dataKey="lR1up" stroke="#F2994A" strokeWidth={1.2} strokeDasharray="5 3" dot={false} name="Ceiling" connectNulls />
+                  <Line type="monotone" dataKey="lR05up" stroke="#E8A838" strokeWidth={1} strokeDasharray="4 3" dot={false} name="+0.5σ" connectNulls />
                   <Line type="monotone" dataKey="lPl" stroke="#27AE60" strokeWidth={2} dot={false} name="Fair Value" connectNulls />
-                  <Line type="monotone" dataKey="lR1dn" stroke="#2F80ED" strokeWidth={1.2} strokeDasharray="5 3" dot={false} name="Support" connectNulls />
-                  <Line type="monotone" dataKey="lR2dn" stroke="#56CCF2" strokeWidth={1.2} dot={false} name="Accumulation" connectNulls />
+                  <Line type="monotone" dataKey="lR05dn" stroke="#56CCF2" strokeWidth={1} strokeDasharray="4 3" dot={false} name="−0.5σ" connectNulls />
+                  <Line type="monotone" dataKey="lSup" stroke="#2F80ED" strokeWidth={1.5} dot={false} name="Support" connectNulls />
                   <Line type="monotone" dataKey="lPrice" stroke="#37352F" strokeWidth={2.5} dot={false} name="BTC" connectNulls />
                 </LineChart>
               </ResponsiveContainer>
@@ -2923,7 +2929,7 @@ export default function MMARDashboard() {
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
                 <thead>
                   <tr style={{ background: "#FAFAF8" }}>
-                    {[`Horizon`, `${resFloorSigma.toFixed(1)}σ Floor`, `−1σ Support`, `Fair Value`, `+1σ Ceiling`, `+2σ Bubble`].map((h, i) => (
+                    {[`Horizon`, `Support`, `−0.5σ`, `Fair Value`, `+1σ Ceiling`, `+2σ Bubble`].map((h, i) => (
                       <th key={h} style={{ padding: "9px 10px", textAlign: i === 0 ? "left" : "right", color: ["", "#56CCF2", "#2F80ED", "#27AE60", "#F2994A", "#EB5757"][i] || "#9B9A97", fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em", borderBottom: "1px solid #E8E5E0", whiteSpace: "nowrap" }}>{h}</th>
                     ))}
                   </tr>
@@ -2934,7 +2940,7 @@ export default function MMARDashboard() {
                       const pct = ((price - S0) / S0 * 100);
                       return { price, pct };
                     };
-                    const cells = [fmtCell(h.p2dn), fmtCell(h.p1dn), fmtCell(h.plF), fmtCell(h.p1up), fmtCell(h.p2up)];
+                    const cells = [fmtCell(h.pSup), fmtCell(h.p05dn), fmtCell(h.plF), fmtCell(h.p1up), fmtCell(h.p2up)];
                     const cellColors = ["#56CCF2", "#2F80ED", "#27AE60", "#F2994A", "#EB5757"];
                     return (
                       <tr key={h.label} style={{ borderBottom: "1px solid #F1F1EF" }}>
