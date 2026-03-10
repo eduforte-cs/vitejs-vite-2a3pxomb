@@ -57,7 +57,13 @@ function fitPowerLaw(prices) {
   const ssRes = logP.reduce((s, y, i) => s + w[i] * (y - (a + b * logT[i])) ** 2, 0);
   const r2 = 1 - ssRes / ssTot;
 
-  return { a, b, residuals, resMean, resStd, r2, pts };
+  // Floor band: Burger-style empirical minimum from liquid markets (post-2013)
+  // Expressed in σ for readability, but the value comes from real data, not a σ multiple
+  const liquidResiduals = pts.filter(p => p.t > daysSinceGenesis("2013-04-01")).map(p => Math.log(p.price) - (a + b * Math.log(p.t)));
+  const resFloor = liquidResiduals.length > 100 ? Math.min(...liquidResiduals) : resMean - 1.5 * resStd;
+  const resFloorSigma = ((resFloor - resMean) / resStd);
+
+  return { a, b, residuals, resMean, resStd, resFloor, resFloorSigma, r2, pts };
 }
 
 function plPrice(a, b, t) { return Math.exp(a + b * Math.log(t)); }
@@ -1928,7 +1934,7 @@ export default function MMARDashboard() {
       setMsg("Fitting Power Law model...");
       await new Promise(r => setTimeout(r, 20));
       const pl = fitPowerLaw(prices);
-      const { a, b, residuals, resMean, resStd, r2 } = pl;
+      const { a, b, residuals, resMean, resStd, resFloor, resFloorSigma, r2 } = pl;
 
       const lastPrice = prices[prices.length - 1];
       const S0 = lastPrice.price;
@@ -2030,7 +2036,7 @@ export default function MMARDashboard() {
           lR2up: +(lpl + (resMean + 2 * resStd) / Math.LN10).toFixed(4),
           lR1up: +(lpl + (resMean + resStd) / Math.LN10).toFixed(4),
           lR1dn: +(lpl + (resMean - resStd) / Math.LN10).toFixed(4),
-          lR2dn: +(lpl + (resMean - 2 * resStd) / Math.LN10).toFixed(4),
+          lR2dn: +(lpl + resFloor / Math.LN10).toFixed(4),
         };
       }).filter(Boolean);
 
@@ -2046,7 +2052,7 @@ export default function MMARDashboard() {
           lR2up: +(lplF + (resMean + 2 * resStd) / Math.LN10).toFixed(4),
           lR1up: +(lplF + (resMean + resStd) / Math.LN10).toFixed(4),
           lR1dn: +(lplF + (resMean - resStd) / Math.LN10).toFixed(4),
-          lR2dn: +(lplF + (resMean - 2 * resStd) / Math.LN10).toFixed(4),
+          lR2dn: +(lplF + resFloor / Math.LN10).toFixed(4),
         });
       }
 
@@ -2082,7 +2088,7 @@ export default function MMARDashboard() {
       setD({
         H, lambda2, std, mean, skew, kurt, annualVol, S0, t0, n, source, mom,
         isSynthetic: source.includes("Synthetic"),
-        lastDate: lastPrice.date, a, b, r2, resMean, resStd, plToday, sigmaFromPL,
+        lastDate: lastPrice.date, a, b, r2, resMean, resStd, resFloor, resFloorSigma, plToday, sigmaFromPL,
         kappa, halfLife, ouRegimes, resReturns, dailyResiduals, currentResidual,
         tauData, plChart, forecastChart, sigmaChart, rollingHurst,
         percentiles, plForecast365, percentiles3y, plForecast3y,
@@ -2125,7 +2131,7 @@ export default function MMARDashboard() {
 
   // ── Destructure ──
   const { H, lambda2, std, annualVol, skew, kurt, S0, t0, source, isSynthetic, lastDate, mom,
-    a, b, r2, resMean, resStd, plToday, sigmaFromPL, kappa, halfLife, ouRegimes,
+    a, b, r2, resMean, resStd, resFloor, resFloorSigma, plToday, sigmaFromPL, kappa, halfLife, ouRegimes,
     resReturns, currentResidual,
     tauData, plChart, forecastChart, sigmaChart, rollingHurst,
     percentiles, plForecast365, percentiles3y, plForecast3y,
@@ -2154,7 +2160,7 @@ export default function MMARDashboard() {
     p1up: Math.exp(Math.log(pl1yFuture) + resMean + resStd),
     fair: pl1yFuture,
     p1dn: Math.exp(Math.log(pl1yFuture) + resMean - resStd),
-    p2dn: Math.exp(Math.log(pl1yFuture) + resMean - 2 * resStd),
+    p2dn: Math.exp(Math.log(pl1yFuture) + resFloor),
   };
   const plUpside1y = ((pl1yBands.p1up - S0) / S0 * 100);
   const plDownside1y = ((S0 - pl1yBands.p1dn) / S0 * 100);
@@ -2211,7 +2217,7 @@ export default function MMARDashboard() {
     const p2up = Math.exp(Math.log(plF) + resMean + 2 * resStd);
     const p1up = Math.exp(Math.log(plF) + resMean + resStd);
     const p1dn = Math.exp(Math.log(plF) + resMean - resStd);
-    const p2dn = Math.exp(Math.log(plF) + resMean - 2 * resStd);
+    const p2dn = Math.exp(Math.log(plF) + resFloor);
     return { ...h, plF, implRet, p2up, p1up, p1dn, p2dn };
   });
 
@@ -2375,7 +2381,7 @@ export default function MMARDashboard() {
     // Worst case
     const mcWorst1y = loss1y?.p5 ? ((loss1y.p5 - S0) / S0 * 100) : -50;
     const mcWorst3y = loss3y?.p5 ? ((loss3y.p5 - S0) / S0 * 100) : -30;
-    paras.push(`Worst case: the PL's −2σ floor in 1 year is ${fmtK(pl1yBands.p2dn)} (${plWorstReturn1y >= 0 ? "+" : ""}${plWorstReturn1y.toFixed(0)}%). The MC bottom 5% of paths: ${fmtK(loss1y?.p5 || S0 * 0.5)} (${mcWorst1y.toFixed(0)}%) in 1 year, ${fmtK(loss3y?.p5 || S0 * 0.5)} (${mcWorst3y >= 0 ? "+" : ""}${mcWorst3y.toFixed(0)}%) in 3 years.${mcWorst3y > 0 ? " Even the worst-case simulation is in profit at 3 years." : ""}`);
+    paras.push(`Worst case: the PL's accumulation floor in 1 year is ${fmtK(pl1yBands.p2dn)} (${plWorstReturn1y >= 0 ? "+" : ""}${plWorstReturn1y.toFixed(0)}%). The MC bottom 5% of paths: ${fmtK(loss1y?.p5 || S0 * 0.5)} (${mcWorst1y.toFixed(0)}%) in 1 year, ${fmtK(loss3y?.p5 || S0 * 0.5)} (${mcWorst3y >= 0 ? "+" : ""}${mcWorst3y.toFixed(0)}%) in 3 years.${mcWorst3y > 0 ? " Even the worst-case simulation is in profit at 3 years." : ""}`);
 
     // Short-term + regime + environment
     const regimeNote = domRegime.id === "bull" ? "in a bull run" : domRegime.id === "bear" ? "in a bear market" : domRegime.id === "accum" ? "in an accumulation phase" : domRegime.id === "recov" ? "in early recovery" : "in a ranging market";
@@ -2410,7 +2416,7 @@ export default function MMARDashboard() {
     { label: "Cycle ceiling", price: +Math.exp(Math.log(plToday) + resMean + resStd).toFixed(0), color: "#F2994A", sigma: "+1σ" },
     { label: "Fair value (Power Law)", price: plToday, color: "#27AE60", sigma: "0" },
     { label: "Normal correction floor", price: +Math.exp(Math.log(plToday) + resMean - resStd).toFixed(0), color: "#2F80ED", sigma: "−1σ" },
-    { label: "Deep accumulation zone", price: +Math.exp(Math.log(plToday) + resMean - 2 * resStd).toFixed(0), color: "#56CCF2", sigma: "−2σ" },
+    { label: "Deep accumulation zone", price: +Math.exp(Math.log(plToday) + resFloor).toFixed(0), color: "#56CCF2", sigma: `${resFloorSigma.toFixed(1)}σ` },
   ];
 
   // PL chart
@@ -2662,7 +2668,7 @@ export default function MMARDashboard() {
                   { label: "Ceiling (+1σ)", price: pl1yBands.p1up, color: "#F2994A" },
                   { label: "Fair value", price: pl1yBands.fair, color: "#27AE60" },
                   { label: "Support (−1σ)", price: pl1yBands.p1dn, color: "#2F80ED" },
-                  { label: "Worst case (−2σ)", price: pl1yBands.p2dn, color: "#56CCF2" },
+                  { label: `Accumulation (${resFloorSigma.toFixed(1)}σ)`, price: pl1yBands.p2dn, color: "#56CCF2" },
                 ].map(({ label, price, color }, i) => {
                   const pct = ((price - S0) / S0 * 100);
                   return (
@@ -2765,7 +2771,7 @@ export default function MMARDashboard() {
                 { color: "#F2994A", label: "Ceiling (+1σ)", dash: true },
                 { color: "#27AE60", label: "Fair Value", dash: false },
                 { color: "#2F80ED", label: "Support (−1σ)", dash: true },
-                { color: "#56CCF2", label: "Accumulation (−2σ)", dash: false },
+                { color: "#56CCF2", label: `Accumulation (${resFloorSigma.toFixed(1)}σ)`, dash: false },
                 { color: "#37352F", label: "BTC Price", dash: false },
               ].map(({ color, dash, label }) => (
                 <div key={label} style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -2883,7 +2889,7 @@ export default function MMARDashboard() {
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
                 <thead>
                   <tr style={{ background: "#FAFAF8" }}>
-                    {["Horizon", "−2σ Floor", "−1σ Support", "Fair Value", "+1σ Ceiling", "+2σ Bubble"].map((h, i) => (
+                    {[`Horizon`, `${resFloorSigma.toFixed(1)}σ Floor`, `−1σ Support`, `Fair Value`, `+1σ Ceiling`, `+2σ Bubble`].map((h, i) => (
                       <th key={h} style={{ padding: "9px 10px", textAlign: i === 0 ? "left" : "right", color: ["", "#56CCF2", "#2F80ED", "#27AE60", "#F2994A", "#EB5757"][i] || "#9B9A97", fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em", borderBottom: "1px solid #E8E5E0", whiteSpace: "nowrap" }}>{h}</th>
                     ))}
                   </tr>
