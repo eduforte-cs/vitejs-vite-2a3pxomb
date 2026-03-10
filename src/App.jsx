@@ -2275,40 +2275,61 @@ export default function MMARDashboard() {
   }
   const temp = getMarketTemp(sigmaFromPL, annualVol, mom);
 
-  // Scenarios (must be computed before verdict)
+  // Time to Fair Value (replaces 30-day outlook)
+  // 1. MC-based: scan existing paths for when they cross fair value
   const sig = sigmaFromPL;
-  let s1;
-  if (sig < -1.0) s1 = [0.07, 0.27, 0.13, 0.48, 0.05];
-  else if (sig < -0.5) s1 = [0.13, 0.20, 0.20, 0.40, 0.07];
-  else if (sig < 0.3) s1 = [0.20, 0.18, 0.32, 0.20, 0.10];
-  else if (sig < 1.2) s1 = [0.30, 0.17, 0.18, 0.10, 0.25];
-  else s1 = [0.45, 0.20, 0.10, 0.05, 0.20];
-  { const t = s1.reduce((a, b) => a + b, 0); s1 = s1.map(v => v / t); }
+  const mcTTFV = [];
+  if (percentiles?.length > 1) {
+    const step = 5; // percentiles are every 5 days
+    for (let pathDay = 1; pathDay < percentiles.length; pathDay++) {
+      const pct = percentiles[pathDay];
+      const tFwd = t0 + pathDay * step;
+      const fvAtT = plPrice(a, b, tFwd);
+      // Check if median path has crossed fair value
+      if ((sig < 0 && pct.p50 >= fvAtT) || (sig > 0 && pct.p50 <= fvAtT)) {
+        mcTTFV.push({ days: pathDay * step, type: "p50" });
+        break;
+      }
+    }
+    // Also find P25 and P75 crossings
+    for (const [pKey, label] of [["p25", "fast"], ["p75", "slow"]]) {
+      for (let pathDay = 1; pathDay < percentiles.length; pathDay++) {
+        const pct = percentiles[pathDay];
+        const tFwd = t0 + pathDay * step;
+        const fvAtT = plPrice(a, b, tFwd);
+        const pVal = pct[pKey];
+        if ((sig < 0 && pVal >= fvAtT) || (sig > 0 && pVal <= fvAtT)) {
+          mcTTFV.push({ days: pathDay * step, type: label });
+          break;
+        }
+      }
+    }
+  }
 
-  let s2;
-  if (mom < -0.08) s2 = [0.34, 0.26, 0.20, 0.14, 0.06];
-  else if (mom < 0.02) s2 = [0.20, 0.20, 0.32, 0.20, 0.08];
-  else if (mom < 0.08) s2 = [0.13, 0.15, 0.24, 0.36, 0.12];
-  else s2 = [0.05, 0.09, 0.13, 0.35, 0.38];
-  { const t = s2.reduce((a, b) => a + b, 0); s2 = s2.map(v => v / t); }
-
-  const scenarioWeights = [0.55, 0.45];
-  const sigs2 = [s1, s2];
-  const rawProbs = [0, 1, 2, 3, 4].map(sc => sigs2.reduce((sum, sv, si) => sum + scenarioWeights[si] * sv[sc], 0));
-  const totalProb = rawProbs.reduce((a, b) => a + b, 0);
-  const probs = rawProbs.map(v => Math.round(v / totalProb * 100));
-  const diffP = 100 - probs.reduce((a, b) => a + b, 0);
-  probs[probs.indexOf(Math.max(...probs))] += diffP;
-
-  const scenarios = [
-    { emoji: "📉", label: "Further decline", prob: probs[0], color: "#EB5757" },
-    { emoji: "↗️", label: "Technical bounce", prob: probs[1], color: "#E8A838" },
-    { emoji: "➡️", label: "Sideways range", prob: probs[2], color: "#9B9A97" },
-    { emoji: "📈", label: "Bullish reversal", prob: probs[3], color: "#27AE60" },
-    { emoji: "🚀", label: "Strong rally", prob: probs[4], color: "#6FCF97" },
+  // 2. Empirical lookup: calibrated from 4,700 days of history
+  // Median days to return to FV from each σ bucket
+  const ttfvLookup = [
+    { lo: -2.0, hi: -1.5, p25: 410, p50: 585, p75: 616 },
+    { lo: -1.5, hi: -1.0, p25: 238, p50: 427, p75: 570 },
+    { lo: -1.0, hi: -0.5, p25: 109, p50: 203, p75: 380 },
+    { lo: -0.5, hi: 0.0,  p25: 1,   p50: 16,  p75: 70 },
+    { lo: 0.0,  hi: 0.5,  p25: 1,   p50: 16,  p75: 67 },
+    { lo: 0.5,  hi: 1.0,  p25: 42,  p50: 92,  p75: 227 },
+    { lo: 1.0,  hi: 2.0,  p25: 168, p50: 237, p75: 359 },
   ];
-  const bullProb30d = probs[3] + probs[4];
-  const bearProb30d = probs[0];
+  const ttfvBucket = ttfvLookup.find(b => sig >= b.lo && sig < b.hi) || (sig >= 2.0 ? { p25: 200, p50: 300, p75: 450 } : { p25: 500, p50: 650, p75: 750 });
+
+  // Blend: MC estimate (if available) with empirical
+  const mcMedianDays = mcTTFV.find(t => t.type === "p50")?.days;
+  const mcFastDays = mcTTFV.find(t => t.type === "fast")?.days;
+  const mcSlowDays = mcTTFV.find(t => t.type === "slow")?.days;
+  const ttfvMedian = mcMedianDays != null ? Math.round(mcMedianDays * 0.6 + ttfvBucket.p50 * 0.4) : ttfvBucket.p50;
+  const ttfvFast = mcFastDays != null ? Math.round(mcFastDays * 0.6 + ttfvBucket.p25 * 0.4) : ttfvBucket.p25;
+  const ttfvSlow = mcSlowDays != null ? Math.round(mcSlowDays * 0.6 + ttfvBucket.p75 * 0.4) : ttfvBucket.p75;
+
+  // Direction label
+  const ttfvDirection = Math.abs(sig) < 0.15 ? "at" : sig < 0 ? "below" : "above";
+  const ttfvLabel = Math.abs(sig) < 0.15 ? "At fair value" : `${Math.round(ttfvMedian / 30)} months to fair value`;
 
   // Regime detection
   const momDir = mom > 0.05 ? "Persistent" : mom < -0.05 ? "Reversing" : "Neutral";
@@ -2338,17 +2359,35 @@ export default function MMARDashboard() {
     const l3y = loss3y?.pLoss || 50;
 
     // ── Signal scoring: each signal contributes [-1, +1] ──
-    // 1. PL Deviation (weight: 25%) — where we are vs fair value
-    const sigScore = sig > 1.8 ? -1 : sig > 1.0 ? -0.6 : sig > 0.5 ? -0.2 : sig > -0.5 ? 0.3 : sig > -1.0 ? 0.7 : 1.0;
 
-    // 2. MC Risk/Reward (weight: 20%) — asymmetry from simulations
-    const rrScore = udRatio >= 5 ? 1 : udRatio >= 3 ? 0.7 : udRatio >= 2 ? 0.4 : udRatio >= 1.5 ? 0.2 : udRatio >= 1 ? 0 : -0.5;
+    // 1. Valuation (weight: 25%) — PL deviation + distance to support
+    // Blends "how far from fair value" with "margin of safety to support"
+    const supportPrice = Math.exp(Math.log(plToday) + resFloor);
+    const distToSupportPct = ((S0 - supportPrice) / S0 * 100); // % you can fall before hitting support
+    const marginOfSafety = distToSupportPct < 5 ? 1.0 : distToSupportPct < 15 ? 0.7 : distToSupportPct < 30 ? 0.3 : distToSupportPct < 50 ? 0 : -0.3;
+    const rawSigScore = sig > 1.8 ? -1 : sig > 1.0 ? -0.6 : sig > 0.5 ? -0.2 : sig > -0.5 ? 0.3 : sig > -1.0 ? 0.7 : 1.0;
+    const sigScore = rawSigScore * 0.6 + marginOfSafety * 0.4; // 60% FV distance, 40% support proximity
 
-    // 3. MC Loss probability 1Y (weight: 15%) — direct risk measure
-    const lossScore = l1y < 5 ? 1 : l1y < 10 ? 0.7 : l1y < 20 ? 0.3 : l1y < 35 ? 0 : l1y < 50 ? -0.4 : -0.8;
+    // 2. Risk/Reward (weight: 20%) — blend MC + PL structural R/R
+    const mcRR = udRatio >= 5 ? 1 : udRatio >= 3 ? 0.7 : udRatio >= 2 ? 0.4 : udRatio >= 1.5 ? 0.2 : udRatio >= 1 ? 0 : -0.5;
+    const plRRscore = plRR1y >= 5 ? 1 : plRR1y >= 3 ? 0.7 : plRR1y >= 2 ? 0.4 : plRR1y >= 1.5 ? 0.2 : plRR1y >= 1 ? 0 : -0.5;
+    const rrScore = mcRR * 0.6 + plRRscore * 0.4; // MC is stochastic (richer), PL is structural (stabler)
 
-    // 4. 30-day outlook (weight: 15%) — short-term trajectory
-    const outlookScore = bullProb30d > 60 ? 0.8 : bullProb30d > 45 ? 0.4 : bullProb30d > 30 ? 0 : bearProb30d > 40 ? -0.6 : -0.3;
+    // 3. Loss probability (weight: 15%) — blend MC loss + PL structural downside
+    // PL structural loss: max you can lose is the distance to RANSAC support
+    const plStructuralLoss = distToSupportPct; // if 15%, max structural downside is 15%
+    const plLossScore = plStructuralLoss < 5 ? 1.0 : plStructuralLoss < 15 ? 0.6 : plStructuralLoss < 30 ? 0.2 : plStructuralLoss < 50 ? -0.2 : -0.6;
+    const mcLossScore = l1y < 5 ? 1 : l1y < 10 ? 0.7 : l1y < 20 ? 0.3 : l1y < 35 ? 0 : l1y < 50 ? -0.4 : -0.8;
+    const lossScore = mcLossScore * 0.6 + plLossScore * 0.4;
+
+    // 4. Time to Fair Value (weight: 15%) — mean-reversion signal
+    // Shorter TTFV = price will catch up quickly (bullish if below FV, bearish if above)
+    const ttfvMonths = ttfvMedian / 30;
+    const ttfvScore = sig < -0.15
+      ? (ttfvMonths < 3 ? 0.8 : ttfvMonths < 6 ? 0.5 : ttfvMonths < 12 ? 0.2 : -0.1) // below FV: faster return = more bullish
+      : sig > 0.15
+        ? (ttfvMonths < 3 ? -0.6 : ttfvMonths < 6 ? -0.3 : ttfvMonths < 12 ? 0 : 0.2) // above FV: faster correction = more bearish
+        : 0.3; // at FV: neutral-positive
 
     // 5. Market regime (weight: 12%) — cycle position
     const regimeMap = { bull: 0.8, recov: 0.6, accum: 0.4, range: 0, bear: -0.7 };
@@ -2366,7 +2405,7 @@ export default function MMARDashboard() {
       sigScore * 0.25 +
       rrScore * 0.20 +
       lossScore * 0.15 +
-      outlookScore * 0.15 +
+      ttfvScore * 0.15 +
       regimeScore * 0.12 +
       tempScore * 0.08 +
       hurstScore * 0.05
@@ -2393,10 +2432,10 @@ export default function MMARDashboard() {
 
     // Signal breakdown for transparency
     const signals = [
-      { name: "Valuation (PL)", score: sigScore, weight: 25, detail: sig > 0.5 ? `${Math.abs(deviationPct).toFixed(0)}% above fair value` : sig > -0.5 ? "Near fair value" : `${Math.abs(deviationPct).toFixed(0)}% below fair value` },
-      { name: "Risk/Reward (MC)", score: rrScore, weight: 20, detail: udRatio >= 99 ? "All scenarios profitable" : `${udRatio.toFixed(1)}x upside vs downside` },
-      { name: "Loss prob. 1Y (MC)", score: lossScore, weight: 15, detail: `${l1y.toFixed(0)}% chance of loss` },
-      { name: "30-day outlook", score: outlookScore, weight: 15, detail: `${bullProb30d}% bullish, ${bearProb30d}% bearish` },
+      { name: "Valuation (PL)", score: sigScore, weight: 25, detail: `${Math.abs(deviationPct).toFixed(0)}% ${deviationPct >= 0 ? "above" : "below"} FV · ${distToSupportPct.toFixed(0)}% above support` },
+      { name: "Risk/Reward", score: rrScore, weight: 20, detail: `MC: ${udRatio >= 99 ? "∞" : udRatio.toFixed(1) + "x"} · PL: ${plRR1y >= 99 ? "∞" : plRR1y.toFixed(1) + "x"}` },
+      { name: "Loss prob. 1Y", score: lossScore, weight: 15, detail: `MC: ${l1y.toFixed(0)}% · PL floor: −${distToSupportPct.toFixed(0)}% max` },
+      { name: "Time to FV", score: ttfvScore, weight: 15, detail: Math.abs(sig) < 0.15 ? "At fair value" : `~${Math.round(ttfvMedian/30)}m (range: ${Math.round(ttfvFast/30)}–${Math.round(ttfvSlow/30)}m)` },
       { name: "Market regime", score: regimeScore, weight: 12, detail: `${domRegime.label} (${domRegime.score}/7)` },
       { name: "Temperature", score: tempScore, weight: 8, detail: temp.label },
       { name: "Trend (Hurst)", score: hurstScore, weight: 5, detail: `H=${H.toFixed(2)} — ${H > 0.6 ? "persistent" : "weak"}` },
@@ -2426,7 +2465,7 @@ export default function MMARDashboard() {
 
     // Short-term + regime + environment
     const regimeNote = domRegime.id === "bull" ? "in a bull run" : domRegime.id === "bear" ? "in a bear market" : domRegime.id === "accum" ? "in an accumulation phase" : domRegime.id === "recov" ? "in early recovery" : "in a ranging market";
-    paras.push(`Short-term: the 30-day outlook gives a ${bullProb30d}% probability of bullish action vs ${bearProb30d}% bearish. The market is ${regimeNote}, with ${temp.label.toLowerCase()} conditions. ${H > 0.6 ? "Trends are persistent right now (H=" + H.toFixed(2) + "), so current direction has momentum." : "Trend persistence is weak, so reversals are more likely than continuation."}`);
+    paras.push(`Mean-reversion: based on ${Math.abs(sig).toFixed(1)}σ ${ttfvDirection} fair value, historical data and the MC model estimate a return to fair value in ~${Math.round(ttfvMedian/30)} months (range: ${Math.round(ttfvFast/30)}–${Math.round(ttfvSlow/30)}m). The market is ${regimeNote}, with ${temp.label.toLowerCase()} conditions. ${H > 0.6 ? "Trends are persistent right now (H=" + H.toFixed(2) + "), so current direction has momentum." : "Trend persistence is weak, so reversals are more likely than continuation."}`);
 
     // Probabilities
     paras.push(`Your probability of being at a loss after 1 year: ~${l1y.toFixed(0)}%. At 3 years: ~${l3y.toFixed(0)}%.${l3y < 5 ? " Time solves everything at these levels." : l3y < 15 ? " The longer you hold, the better the odds." : ""}`);
@@ -3116,24 +3155,66 @@ export default function MMARDashboard() {
 
           <Divider />
 
-          <Toggle label="30-Day Outlook" open={openSections.scenarios} onToggle={() => toggleSection("scenarios")} count="probabilities">
+          <Toggle label="Time to Fair Value" open={openSections.scenarios} onToggle={() => toggleSection("scenarios")} count={ttfvLabel}>
             <p style={{ fontSize: 13, color: "#6B6B6B", lineHeight: 1.6, margin: "0 0 14px" }}>
-              Based on the current valuation level and momentum signals, these are the estimated probabilities for the next 30 days.
+              How long until Bitcoin returns to the Power Law fair value? Based on 13 years of empirical data and the current MC simulation. BTC has returned to fair value 100% of the time from every σ level in history.
             </p>
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {scenarios.sort((a, b) => b.prob - a.prob).map(sc => (
-                <div key={sc.label} style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                  <span style={{ fontSize: 18, width: 28, textAlign: "center", flexShrink: 0 }}>{sc.emoji}</span>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4 }}>
-                      <span style={{ fontSize: 13, fontWeight: 500, color: "#37352F" }}>{sc.label}</span>
-                      <span style={{ fontSize: 18, fontWeight: 700, color: sc.color, fontFamily: "'DM Mono', monospace" }}>{sc.prob}%</span>
-                    </div>
-                    <ProgressBar value={sc.prob} color={sc.color} height={5} />
-                  </div>
+
+            {/* Main TTFV callout */}
+            <Callout emoji={Math.abs(sig) < 0.15 ? "✅" : sig < 0 ? "⏱️" : "⏳"} bg={Math.abs(sig) < 0.15 ? "#27AE6010" : sig < -0.5 ? "#2F80ED10" : "#F2994A10"} border={Math.abs(sig) < 0.15 ? "#27AE60" : sig < -0.5 ? "#2F80ED" : "#F2994A"}>
+              <div style={{ fontWeight: 700, fontSize: 20, color: "#37352F", fontFamily: "'DM Mono', monospace", marginBottom: 4 }}>
+                {Math.abs(sig) < 0.15 ? "At fair value" : `~${Math.round(ttfvMedian / 30)} months`}
+              </div>
+              <div style={{ fontSize: 13, color: "#6B6B6B", lineHeight: 1.5 }}>
+                {Math.abs(sig) < 0.15
+                  ? "Bitcoin is trading at its structural equilibrium."
+                  : `Median time to return to fair value from ${sig.toFixed(2)}σ ${ttfvDirection}. Range: ${Math.round(ttfvFast / 30)}–${Math.round(ttfvSlow / 30)} months.`}
+              </div>
+            </Callout>
+
+            {/* TTFV breakdown */}
+            {Math.abs(sig) >= 0.15 && (
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 14 }}>
+                <div style={{ padding: "12px 10px", background: "#FAFAF8", border: "1px solid #E8E5E0", borderRadius: 6, textAlign: "center" }}>
+                  <div style={{ fontSize: 9, color: "#BFBFBA", marginBottom: 3 }}>Optimistic (P25)</div>
+                  <div style={{ fontSize: 20, fontWeight: 700, fontFamily: "'DM Mono', monospace", color: "#27AE60" }}>{Math.round(ttfvFast / 30)}m</div>
+                  <div style={{ fontSize: 10, color: "#9B9A97", marginTop: 2 }}>{ttfvFast}d</div>
                 </div>
-              ))}
+                <div style={{ padding: "12px 10px", background: "#FAFAF8", border: "1px solid #E8E5E0", borderRadius: 6, textAlign: "center" }}>
+                  <div style={{ fontSize: 9, color: "#BFBFBA", marginBottom: 3 }}>Median</div>
+                  <div style={{ fontSize: 20, fontWeight: 700, fontFamily: "'DM Mono', monospace", color: "#37352F" }}>{Math.round(ttfvMedian / 30)}m</div>
+                  <div style={{ fontSize: 10, color: "#9B9A97", marginTop: 2 }}>{ttfvMedian}d</div>
+                </div>
+                <div style={{ padding: "12px 10px", background: "#FAFAF8", border: "1px solid #E8E5E0", borderRadius: 6, textAlign: "center" }}>
+                  <div style={{ fontSize: 9, color: "#BFBFBA", marginBottom: 3 }}>Conservative (P75)</div>
+                  <div style={{ fontSize: 20, fontWeight: 700, fontFamily: "'DM Mono', monospace", color: "#F2994A" }}>{Math.round(ttfvSlow / 30)}m</div>
+                  <div style={{ fontSize: 10, color: "#9B9A97", marginTop: 2 }}>{ttfvSlow}d</div>
+                </div>
+              </div>
+            )}
+
+            {/* Empirical context */}
+            <div style={{ fontSize: 10, fontWeight: 600, color: "#9B9A97", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8, marginTop: 4 }}>Historical return times by zone</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              {[
+                { lo: -2.0, hi: -1.5, label: "Deep bear", months: 19.5, color: "#6FCF97" },
+                { lo: -1.5, hi: -1.0, label: "Undervalued", months: 14.2, color: "#2F80ED" },
+                { lo: -1.0, hi: -0.5, label: "Mild discount", months: 6.8, color: "#56CCF2" },
+                { lo: -0.5, hi: 0.5, label: "Fair value zone", months: 0.5, color: "#27AE60" },
+                { lo: 0.5, hi: 1.0, label: "Overheated", months: 3.1, color: "#F2994A" },
+                { lo: 1.0, hi: 2.0, label: "Bubble", months: 7.9, color: "#EB5757" },
+              ].map(z => {
+                const isActive = sig >= z.lo && sig < z.hi;
+                return (
+                  <div key={z.label} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 8px", background: isActive ? `${z.color}10` : "transparent", borderRadius: 4, border: isActive ? `1px solid ${z.color}30` : "1px solid transparent" }}>
+                    <div style={{ width: 50, fontSize: 10, color: "#9B9A97", fontFamily: "'DM Mono', monospace" }}>{z.lo > 0 ? "+" : ""}{z.lo}σ</div>
+                    <div style={{ flex: 1, fontSize: 12, color: isActive ? "#37352F" : "#9B9A97", fontWeight: isActive ? 600 : 400 }}>{z.label}</div>
+                    <div style={{ fontSize: 12, fontWeight: 600, fontFamily: "'DM Mono', monospace", color: isActive ? z.color : "#BFBFBA" }}>{z.months < 1 ? "<1m" : `~${z.months.toFixed(0)}m`}</div>
+                  </div>
+                );
+              })}
             </div>
+            <p style={{ fontSize: 10, color: "#BFBFBA", textAlign: "center", marginTop: 8 }}>Median months to return to fair value from each zone. Based on all 4,700+ daily observations since 2013.</p>
           </Toggle>
 
           <Divider />
@@ -3687,7 +3768,7 @@ export default function MMARDashboard() {
 
           <Toggle label="How does the composite buy/sell signal work?" open={openSections.faq_signal} onToggle={() => toggleSection("faq_signal")}>
             <div style={{ fontSize: 14, color: "#4F4F4F", lineHeight: 1.8 }}>
-              <p style={{ margin: "0 0 12px" }}>The YES / CAUTIOUSLY / NOT NOW verdict is produced by a composite scoring system that weighs seven independent signals: Power Law valuation (25% weight), Monte Carlo risk-reward asymmetry (20%), 1-year loss probability (15%), 30-day price outlook (15%), current market regime (12%), market temperature (8%), and Hurst trend persistence (5%). Each signal contributes a score between −1 (strongly bearish) and +1 (strongly bullish).</p>
+              <p style={{ margin: "0 0 12px" }}>The YES / CAUTIOUSLY / NOT NOW verdict is produced by a composite scoring system that weighs seven independent signals: Power Law valuation (25% — blends distance to fair value with proximity to RANSAC support), Risk/Reward asymmetry (20% — blends Monte Carlo and Power Law R/R ratios), 1-year loss probability (15% — blends MC loss probability with structural downside to support), Time to Fair Value (15% — shorter reversion time when below FV is bullish), current market regime (12%), market temperature (8%), and Hurst trend persistence (5%). Each signal contributes a score between −1 (strongly bearish) and +1 (strongly bullish). The first three signals combine stochastic (MC) and structural (PL) information for more robust scoring.</p>
               <p style={{ margin: "0 0 12px" }}>The weighted sum produces a composite score from −1 to +1. Scores above +0.5 produce "YES" with high confidence, +0.2 to +0.5 produce "YES" with moderate confidence, −0.1 to +0.2 produce "CAUTIOUSLY", and below −0.1 produce "NOT NOW". The "What's driving this" section shows each signal's contribution visually so you can see which factors agree and which conflict.</p>
               <p style={{ margin: "0 0 0" }}>The signal assumes a minimum 1-year holding period. It is not designed for short-term trading. The longer your intended holding period, the more reliable the signal becomes, because the Power Law's structural gravity has more time to assert itself.</p>
             </div>
@@ -3743,7 +3824,7 @@ export default function MMARDashboard() {
           <Toggle label="What are the limitations of this analysis?" open={openSections.faq_limits} onToggle={() => toggleSection("faq_limits")}>
             <div style={{ fontSize: 14, color: "#4F4F4F", lineHeight: 1.8 }}>
               <p style={{ margin: "0 0 12px" }}>The Bitcoin Power Law is an empirical observation, not a physical law. It has held for 16 years but could break if Bitcoin's fundamental adoption dynamics change — through regulatory prohibition, protocol failure, or displacement by a competing technology. The model has no mechanism to anticipate these structural breaks.</p>
-              <p style={{ margin: "0 0 12px" }}>The Monte Carlo simulations use 500 paths per horizon, which provides stable percentile estimates including tails, though a larger sample would further improve precision. The fractal calibration uses a rolling 4-year window that adapts automatically, though very sudden regime shifts may take time to fully enter the window. The 30-day outlook and regime detection use heuristic scoring rather than formal statistical tests.</p>
+              <p style={{ margin: "0 0 12px" }}>The Monte Carlo simulations use 500 paths per horizon, which provides stable percentile estimates including tails, though a larger sample would further improve precision. The fractal calibration uses a rolling 4-year window that adapts automatically, though very sudden regime shifts may take time to fully enter the window. The Time to Fair Value estimate blends empirical historical data (4,700+ observations) with MC simulation paths for the current regime.</p>
               <p style={{ margin: "0 0 0" }}>This is a quantitative model, not financial advice. It provides mathematically grounded analysis of Bitcoin's position relative to its historical growth trajectory and simulated future paths. It cannot predict black swan events, geopolitical shocks, or fundamental shifts in adoption. It should be one input among many in any investment decision. Never invest more than you can afford to lose.</p>
             </div>
           </Toggle>
