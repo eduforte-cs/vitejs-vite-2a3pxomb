@@ -30,9 +30,10 @@ function fitPowerLaw(prices) {
 
   // ── Weighted Least Squares ──
   // Exponential weights: recent data matters more, early illiquid data matters less
-  // Half-life of ~4 years (1460 days in log-time units)
+  // Half-life of ~8 years in log-time units
+  // Balances: recent liquid data > early thin data, but doesn't let one cycle dominate
   const tMax = logT[n - 1];
-  const halfLife = Math.log(daysSinceGenesis("2020-01-01")) - Math.log(daysSinceGenesis("2016-01-01")); // ~4yr in log-t space
+  const halfLife = Math.log(daysSinceGenesis("2020-01-01")) - Math.log(daysSinceGenesis("2012-01-01")); // ~8yr in log-t space
   const decay = Math.LN2 / halfLife;
   const rawW = logT.map(lt => Math.exp(-decay * (tMax - lt)));
   const wSum = rawW.reduce((s, w) => s + w, 0);
@@ -400,9 +401,6 @@ const EARLY_BTC = [
   ["2012-01-01",6.20],["2012-02-01",4.50],["2012-03-01",4.90],["2012-04-01",5.00],["2012-05-01",5.10],["2012-06-01",6.50],
   ["2012-07-01",7.10],["2012-08-01",9.90],["2012-09-01",12.4],["2012-10-01",11.5],["2012-11-01",12.5],["2012-12-01",13.4],
   ["2013-01-01",13.5],["2013-02-01",23.0],["2013-03-01",34.0],
-  ["2013-03-08",47.0],["2013-03-15",52.0],["2013-03-22",65.0],["2013-03-28",92.0],
-  ["2013-04-01",93.0],["2013-04-05",140.0],["2013-04-09",230.0],["2013-04-10",266.0],
-  ["2013-04-12",68.0],["2013-04-15",85.0],["2013-04-19",120.0],["2013-04-23",135.0],["2013-04-27",136.0],
 ].map(([date, price]) => ({ date, price }));
 
 // BTC daily prices hardcoded: 2013-04-01 to 2025-01-31
@@ -3602,7 +3600,7 @@ export default function MMARDashboard() {
             <div style={{ fontSize: 14, color: "#4F4F4F", lineHeight: 1.8 }}>
               <p style={{ margin: "0 0 12px", fontWeight: 500, color: "#37352F" }}>The model runs a five-step pipeline, each step building on the previous one:</p>
 
-              <p style={{ margin: "0 0 12px" }}><strong style={{ color: "#37352F" }}>Step 1 — Power Law regression (weighted).</strong> We fit log(price) = a + b × log(days since genesis) using Weighted Least Squares across all data from 2010 to today. The weights follow an exponential decay with a ~4-year half-life: recent data from liquid, mature markets weighs more than early-era data from thin, unreliable exchanges. This prevents a $0.05 price from 2010 (traded between a handful of people) from having the same influence as a $70k price from 2024 (traded on venues with billions in daily volume). The output is the growth exponent b, the fair value curve, and the residuals. The σ bands are computed from unweighted residuals to preserve the full historical deviation range.</p>
+              <p style={{ margin: "0 0 12px" }}><strong style={{ color: "#37352F" }}>Step 1 — Power Law regression (weighted).</strong> We fit log(price) = a + b × log(days since genesis) using Weighted Least Squares across all data from 2010 to today. The weights follow an exponential decay with a ~8-year half-life: recent data from liquid, mature markets weighs more than early-era data from thin, unreliable exchanges. This prevents a $0.05 price from 2010 (traded between a handful of people) from having the same influence as a $70k price from 2024 (traded on venues with billions in daily volume). The output is the growth exponent b, the fair value curve, and the residuals. The σ bands are computed from unweighted residuals to preserve the full historical deviation range.</p>
 
               <p style={{ margin: "0 0 12px" }}><strong style={{ color: "#37352F" }}>Step 2 — Fractal structure calibration.</strong> Using daily residual returns from 2020 onwards (to reflect the current market regime), we estimate two parameters. The Hurst exponent (H) is measured via Detrended Fluctuation Analysis (DFA-1), which is more robust than the classical R/S method for short and non-stationary series. DFA integrates the demeaned series, splits it into windows at multiple scales, fits a linear trend within each window, computes the RMS of the detrended fluctuations, and extracts H as the slope of log(F) vs log(scale). Both forward and backward window passes are used for better coverage. H above 0.5 indicates trend persistence, below 0.5 indicates mean-reversion. The intermittency parameter (λ²) is extracted from the multifractal partition function by fitting the scaling exponent τ(q) across moment orders q = −2 to 5 at time scales from 8 to 128 days. This captures how volatility concentrates at different frequencies. Standard financial models skip both measurements entirely and assume returns are independent and normally distributed.</p>
 
