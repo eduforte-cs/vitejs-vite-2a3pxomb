@@ -369,11 +369,12 @@ function generateCascade(nSteps, lambda2) {
   return tt;
 }
 
-function simulatePathsPL(nPaths, nDays, H, lambda2, resStd, resMean, a, b, t0, ouRegimes, currentResidual, resReturns) {
+function simulatePathsPL(nPaths, nDays, H, lambda2, resStd, resMean, a, b, t0, ouRegimes, currentResidual, resReturns, resFloor) {
   const empN = resReturns.length;
   let empVar = 0; for (let i = 0; i < empN; i++) empVar += resReturns[i] * resReturns[i];
   const empStd = Math.sqrt(empVar / empN) || 1;
-  const cap = 2.5 * resStd;
+  const capUp = 2.5 * resStd;
+  const capDn = resFloor; // RANSAC support = reflecting barrier
   const rho = Math.pow(2, 2 * H - 1) - 1;
   const rhoClamp = Math.max(-0.5, Math.min(rho, 0.8));
   const mixAlpha = rhoClamp;
@@ -410,7 +411,9 @@ function simulatePathsPL(nPaths, nDays, H, lambda2, resStd, resMean, a, b, t0, o
       prevNorm = correlatedNorm;
       const shock = correlatedNorm * targetShockStd * volScale;
       X = X - kappa * (X - resMean) + shock;
-      X = Math.max(-cap, Math.min(cap, X));
+      // Reflecting barrier at RANSAC support, cap at +2.5σ
+      if (X < capDn) X = capDn + (capDn - X) * 0.5; // soft bounce
+      X = Math.min(capUp, X);
       prices[t] = plNow * Math.exp(X);
     }
     paths.push(prices);
@@ -1752,8 +1755,8 @@ function getVerdictPlain(sig) {
   if (sig > 1.8) return { emoji: "🔴", label: "Overheated", desc: "Bitcoin is trading well above its long-term trend. Historically, these levels precede corrections.", color: "#EB5757" };
   if (sig > 1.0) return { emoji: "🟡", label: "Above trend", desc: "Price is above fair value and entering the overheated zone. Consider taking some profits.", color: "#E8A838" };
   if (sig > -0.5) return { emoji: "🟢", label: "Fair value", desc: "Bitcoin is trading near its structural equilibrium. A neutral position is reasonable.", color: "#27AE60" };
-  if (sig > -1.35) return { emoji: "🔵", label: "Undervalued", desc: "Price is below the long-term trend. Historically a good zone to accumulate.", color: "#2F80ED" };
-  return { emoji: "💎", label: "Deep value", desc: "Bitcoin is at historically low valuations relative to its growth trajectory. Strong buy signal.", color: "#6FCF97" };
+  if (sig > -1.0) return { emoji: "🔵", label: "Undervalued", desc: "Price is below the long-term trend. Approaching the structural support zone.", color: "#2F80ED" };
+  return { emoji: "💎", label: "Deep value", desc: "Bitcoin is at or below its RANSAC support — the level that has held in every cycle since 2013. Historically the strongest buy signal.", color: "#6FCF97" };
 }
 
 function getVolLabel(annVol) {
@@ -1845,8 +1848,9 @@ function ProgressBar({ value, max = 100, color = "#2F80ED", height = 6 }) {
 }
 
 function DeviationGauge({ sigma, style: outerStyle }) {
-  const clamped = Math.max(-2, Math.min(2, sigma));
-  const pct = ((clamped + 2) / 4) * 100;
+  // Asymmetric: support (RANSAC) at ~-1σ, bubble at +2σ
+  const clamped = Math.max(-1.2, Math.min(2.0, sigma));
+  const pct = ((clamped + 1.2) / 3.2) * 100;
   const zones = [
     { color: "#6FCF97" },
     { color: "#2F80ED" },
@@ -1875,7 +1879,7 @@ function DeviationGauge({ sigma, style: outerStyle }) {
         }} />
       </div>
       <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4 }}>
-        {[-2, -1, 0, 1, 2].map(s => (
+        {[-1, -0.5, 0, 1, 2].map(s => (
           <span key={s} style={{ fontSize: 9, color: "#BFBFBA", fontFamily: "monospace" }}>{s > 0 ? "+" : ""}{s}σ</span>
         ))}
       </div>
@@ -1939,15 +1943,15 @@ export default function MMARDashboard() {
       try {
         const { spot } = await fetchSpotPrice();
         if (!spot) { setRefreshing(false); return; }
-        const { a, b, resMean, resStd, H, lambda2, ouRegimes, t0, resReturns } = d;
+        const { a, b, resMean, resStd, resFloor, H, lambda2, ouRegimes, t0, resReturns } = d;
         const tNow = daysSinceGenesis(new Date().toISOString().slice(0, 10));
         const plNow = plPrice(a, b, tNow);
         const newResidual = Math.log(spot) - Math.log(plNow);
         const newSigma = (newResidual - resMean) / resStd;
-        const paths = simulatePathsPL(200, 365, H, lambda2, resStd, resMean, a, b, tNow, ouRegimes, newResidual, resReturns);
+        const paths = simulatePathsPL(200, 365, H, lambda2, resStd, resMean, a, b, tNow, ouRegimes, newResidual, resReturns, resFloor);
         const pct = computePercentiles(paths, 365);
         const N3Y = 365 * 3;
-        const paths3y = simulatePathsPL(200, N3Y, H, lambda2, resStd, resMean, a, b, tNow, ouRegimes, newResidual, resReturns);
+        const paths3y = simulatePathsPL(200, N3Y, H, lambda2, resStd, resMean, a, b, tNow, ouRegimes, newResidual, resReturns, resFloor);
         const pct3y = computePercentiles(paths3y, N3Y);
         setD(prev => ({ ...prev, S0: spot, t0: tNow, plToday: plNow, sigmaFromPL: newSigma, currentResidual: newResidual, percentiles: pct, percentiles3y: pct3y, pl1y: +plPrice(a, b, tNow + 365).toFixed(0), pl2y: +plPrice(a, b, tNow + 730).toFixed(0), pl3y: +plPrice(a, b, tNow + 365 * 3).toFixed(0) }));
         setLastRefresh(new Date());
@@ -2052,7 +2056,7 @@ export default function MMARDashboard() {
       // Batch MC in chunks of 100 to avoid UI freeze
       let paths = [];
       for (let batch = 0; batch < 5; batch++) {
-        const chunk = simulatePathsPL(100, 365, H, lambda2, resStd, resMean, a, b, t0, ouRegimes, currentResidual, resReturns);
+        const chunk = simulatePathsPL(100, 365, H, lambda2, resStd, resMean, a, b, t0, ouRegimes, currentResidual, resReturns, resFloor);
         paths = paths.concat(chunk);
         setMsg(`Running Monte Carlo... ${(batch + 1) * 100}/500 (1Y)`);
         await new Promise(r => setTimeout(r, 10));
@@ -2105,7 +2109,7 @@ export default function MMARDashboard() {
       const N3Y = 365 * 3;
       let paths3y = [];
       for (let batch = 0; batch < 5; batch++) {
-        const chunk = simulatePathsPL(100, N3Y, H, lambda2, resStd, resMean, a, b, t0, ouRegimes, currentResidual, resReturns);
+        const chunk = simulatePathsPL(100, N3Y, H, lambda2, resStd, resMean, a, b, t0, ouRegimes, currentResidual, resReturns, resFloor);
         paths3y = paths3y.concat(chunk);
         setMsg(`Running Monte Carlo... ${(batch + 1) * 100}/500 (3Y)`);
         await new Promise(r => setTimeout(r, 10));
@@ -2274,7 +2278,7 @@ export default function MMARDashboard() {
   // Scenarios (must be computed before verdict)
   const sig = sigmaFromPL;
   let s1;
-  if (sig < -1.5) s1 = [0.07, 0.27, 0.13, 0.48, 0.05];
+  if (sig < -1.0) s1 = [0.07, 0.27, 0.13, 0.48, 0.05];
   else if (sig < -0.5) s1 = [0.13, 0.20, 0.20, 0.40, 0.07];
   else if (sig < 0.3) s1 = [0.20, 0.18, 0.32, 0.20, 0.10];
   else if (sig < 1.2) s1 = [0.30, 0.17, 0.18, 0.10, 0.25];
@@ -2311,7 +2315,7 @@ export default function MMARDashboard() {
   const bullConds = [sig > 0.5, sig > 1.0, mom > 0.08, mom > 0.12, H > 0.58, H > 0.65, annualVol >= 0.45].filter(Boolean).length;
   const bearConds = [sig < -0.8, sig < -1.2, mom < -0.06, mom < -0.10, H > 0.60, annualVol >= 0.80, halfLife > 120].filter(Boolean).length;
   const rangeConds = [Math.abs(sig) < 0.4, Math.abs(sig) < 0.2, Math.abs(mom) < 0.05, Math.abs(mom) < 0.03, H < 0.58, lambda2 < 0.12, annualVol < 0.45].filter(Boolean).length;
-  const accumConds = [sig < -1.0, sig < -1.5, mom > -0.04, H < 0.62, annualVol < 0.80, halfLife < 200, lambda2 < 0.20].filter(Boolean).length;
+  const accumConds = [sig < -0.7, sig < -1.0, mom > -0.04, H < 0.62, annualVol < 0.80, halfLife < 200, lambda2 < 0.20].filter(Boolean).length;
   const recovConds = [sig < 0.2, mom > 0.04, mom > 0.08, H > 0.55, annualVol < 0.80, sig > -1.0, halfLife < 180].filter(Boolean).length;
   const regimes = [
     { id: "bear", emoji: "🐻", label: "Bear Market", score: bearConds, color: "#EB5757", desc: "Sustained downward pressure" },
@@ -2335,7 +2339,7 @@ export default function MMARDashboard() {
 
     // ── Signal scoring: each signal contributes [-1, +1] ──
     // 1. PL Deviation (weight: 25%) — where we are vs fair value
-    const sigScore = sig > 1.8 ? -1 : sig > 1.0 ? -0.6 : sig > 0.5 ? -0.2 : sig > -0.5 ? 0.3 : sig > -1.0 ? 0.6 : sig > -1.5 ? 0.8 : 1.0;
+    const sigScore = sig > 1.8 ? -1 : sig > 1.0 ? -0.6 : sig > 0.5 ? -0.2 : sig > -0.5 ? 0.3 : sig > -1.0 ? 0.7 : 1.0;
 
     // 2. MC Risk/Reward (weight: 20%) — asymmetry from simulations
     const rrScore = udRatio >= 5 ? 1 : udRatio >= 3 ? 0.7 : udRatio >= 2 ? 0.4 : udRatio >= 1.5 ? 0.2 : udRatio >= 1 ? 0 : -0.5;
@@ -2435,9 +2439,11 @@ export default function MMARDashboard() {
   // Risk matrix data
   const riskLevels = [5, 10, 25, 50, 75, 90, 95];
 
+  // PL risk matrix: Gaussian for upper, clamped at support floor for lower
   const plMatrixRows = riskLevels.map(rl => {
     const z = normInv(rl / 100);
-    return { rl, price: Math.exp(Math.log(plToday) + resMean + z * resStd) };
+    const res = Math.max(resFloor, resMean + z * resStd); // never below RANSAC support
+    return { rl, price: Math.exp(Math.log(plToday) + res) };
   });
   const mcMatrixRows = riskLevels.map(rl => {
     const pts = [{ p: 5, v: last.p5 }, { p: 25, v: last.p25 }, { p: 50, v: last.p50 }, { p: 75, v: last.p75 }, { p: 95, v: last.p95 }];
@@ -2725,11 +2731,11 @@ export default function MMARDashboard() {
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, padding: "12px 14px", background: "#FFF", borderRadius: 6, border: "1px solid #F1F1EF" }}>
                 <div>
-                  <div style={{ fontSize: 10, color: "#9B9A97", marginBottom: 3 }}>Upside to +1σ</div>
+                  <div style={{ fontSize: 10, color: "#9B9A97", marginBottom: 3 }}>Upside to +0.5σ</div>
                   <div style={{ fontSize: 16, fontWeight: 700, color: "#27AE60", fontFamily: "'DM Mono', monospace" }}>+{plUpside1y.toFixed(0)}%</div>
                 </div>
                 <div>
-                  <div style={{ fontSize: 10, color: "#9B9A97", marginBottom: 3 }}>Downside to −1σ</div>
+                  <div style={{ fontSize: 10, color: "#9B9A97", marginBottom: 3 }}>Downside to −0.5σ</div>
                   <div style={{ fontSize: 16, fontWeight: 700, color: plDownside1y > 0 ? "#EB5757" : "#27AE60", fontFamily: "'DM Mono', monospace" }}>{plDownside1y > 0 ? `−${plDownside1y.toFixed(0)}%` : `+${Math.abs(plDownside1y).toFixed(0)}%`}</div>
                 </div>
                 <div>
@@ -3275,7 +3281,7 @@ export default function MMARDashboard() {
                       <div style={{ fontSize: 10, color: "#9B9A97", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.04em" }}>σ deviation</div>
                       <div style={{ fontSize: 28, fontWeight: 700, fontFamily: "'DM Mono', monospace", color: curSig > 1 ? "#EB5757" : curSig > 0.5 ? "#F2994A" : curSig > -0.5 ? "#27AE60" : curSig > -1 ? "#2F80ED" : "#56CCF2" }}>{curSig >= 0 ? "+" : ""}{curSig.toFixed(2)}σ</div>
                       <div style={{ fontSize: 11, color: "#BFBFBA", marginTop: 2 }}>
-                        {curSig > 1.5 ? "Bubble zone" : curSig > 0.5 ? "Above fair value" : curSig > -0.5 ? "Near fair value" : curSig > -1.5 ? "Undervalued" : "Deep value"}
+                        {curSig > 1.5 ? "Bubble zone" : curSig > 0.5 ? "Above fair value" : curSig > -0.5 ? "Near fair value" : curSig > -1.0 ? "Undervalued" : "Deep value"}
                       </div>
                     </div>
                   </div>
@@ -3635,7 +3641,7 @@ export default function MMARDashboard() {
             <div style={{ fontSize: 14, color: "#4F4F4F", lineHeight: 1.8 }}>
               <p style={{ margin: "0 0 12px" }}>The Bitcoin Power Law model was discovered by physicist Giovanni Santostasi in 2019 and independently developed by Harold Christopher Burger in his "Power-Law Corridor of Growth" analysis. They found that when you plot Bitcoin's price against time on a logarithmic scale for both axes, the data points fall on a remarkably straight line going back to 2010. That straight line is a power law — the same type of mathematical relationship found in city population scaling, earthquake magnitude distributions, and network growth.</p>
               <p style={{ margin: "0 0 12px" }}>In practical terms, the Power Law gives Bitcoin a "fair value" at any point in time based on its age. It doesn't predict short-term price action, but it defines a structural trajectory. The model fits over 16 years of daily data with an R-squared above 0.93, meaning it accounts for more than 93% of Bitcoin's historical price variation.</p>
-              <p style={{ margin: "0 0 0" }}>We measure how far the current price deviates from this line using standard deviations (σ). Deviations between +1σ and −1σ are normal. Beyond ±2σ is historically extreme. Every instance of +2σ in Bitcoin's history preceded a major correction. Every instance of −2σ preceded a major rally.</p>
+              <p style={{ margin: "0 0 0" }}>We measure how far the current price deviates from this line using standard deviations (σ). Deviations between +0.5σ and −0.5σ are the "fair value zone" where BTC spends most of its time. Beyond +2σ is historically extreme — every instance preceded a major correction. The support floor is derived from a RANSAC robust fit that automatically excludes bubble peaks, matching the approach used by Burger/Santostasi. BTC has never sustained below this line in 13 years of liquid markets.</p>
             </div>
           </Toggle>
           <Divider />
@@ -3698,7 +3704,7 @@ export default function MMARDashboard() {
 
           <Toggle label="How accurate is this model? Has it been backtested?" open={openSections.faq_accuracy} onToggle={() => toggleSection("faq_accuracy")}>
             <div style={{ fontSize: 14, color: "#4F4F4F", lineHeight: 1.8 }}>
-              <p style={{ margin: "0 0 12px" }}>The Power Law regression has an R² above 0.93 over 16 years of data, which is exceptionally high for any financial model. The σ-band framework has correctly identified every major cycle top (at or above +2σ) and every major cycle bottom (at or near −2σ) in Bitcoin's history. However, past statistical consistency does not guarantee future performance.</p>
+              <p style={{ margin: "0 0 12px" }}>The Power Law regression has an R² above 0.91 over 16 years of data, which is exceptionally high for any financial model. The band framework combines statistical σ-bands (±0.5σ, ±1σ, +2σ) with a RANSAC-derived support floor that has correctly contained every major cycle bottom since 2013. The +2σ ceiling has correctly identified every major cycle top. However, past statistical consistency does not guarantee future performance.</p>
               <p style={{ margin: "0 0 12px" }}>The MMAR fractal parameters (H and λ²) are calibrated on a rolling 4-year window of recent data, which means they always reflect the current market microstructure and adapt as new data arrives. The Monte Carlo simulations use 500 paths per horizon, providing stable estimates across all percentiles including the tails (P5, P95).</p>
               <p style={{ margin: "0 0 0" }}>The composite signal has not been formally backtested across full historical cycles because it depends on the Monte Carlo output, which is stochastic by nature (different each run). The individual components — Power Law deviation, Hurst exponent, multifractal spectrum — have been validated against Bitcoin's empirical properties in academic research.</p>
             </div>
