@@ -2199,7 +2199,7 @@ export default function MMARDashboard() {
               Spot refreshes every 60s · All calculations run in your browser · No data stored
             </span>
             <span style={{ fontSize: 10, color: "#E8E5E0" }}>
-              © {new Date().getFullYear()} CommonSense Technologies 89 S.L.
+              © {new Date().getFullYear()} CommonSense Technologies S.L.
             </span>
           </div>
         </div>
