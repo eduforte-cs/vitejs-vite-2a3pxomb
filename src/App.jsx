@@ -1899,32 +1899,14 @@ export default function MMARDashboard() {
 
   // Toggle states for sections
   const [openSections, setOpenSections] = useState({
-    faq_pl: false,
-    faq_fractal: false,
-    faq_method: false,
-    faq_mc: false,
-    faq_signal: false,
-    faq_data: false,
-    faq_accuracy: false,
-    faq_ta: false,
-    faq_notwhat: false,
-    faq_who: false,
-    faq_limits: false,
+    faq_pl: false, faq_fractal: false, faq_method: false, faq_mc: false,
+    faq_signal: false, faq_data: false, faq_accuracy: false, faq_ta: false,
+    faq_notwhat: false, faq_who: false, faq_limits: false,
     shouldbuy: true,
-    longanswer: false,
-    dataview: false,
-    drivers: false,
-    powerlaw: true,
-    levels: false,
-    scenarios: true,
-    regime: true,
-    hurst: false,
-    riskmatrix: false,
-    plforward: false,
-    montecarlo: false,
-    mc3y: false,
-    mc3y_chart: false,
-    technicals: false,
+    longanswer: false, dataview: false, drivers: false, powerlaw: false,
+    levels: false, plforward: false, montecarlo: false, scenarios: false,
+    mc3y: false, mc3y_chart: false, riskmatrix: false,
+    regime: false, hurst: false, technicals: false,
   });
   const toggleSection = (key) => setOpenSections(prev => ({ ...prev, [key]: !prev[key] }));
 
@@ -2203,8 +2185,8 @@ export default function MMARDashboard() {
     p05dn: Math.exp(Math.log(pl1yFuture) + resMean - 0.5 * resStd),
     pSup: Math.exp(Math.log(pl1yFuture) + resFloor),
   };
-  const plUpside1y = ((pl1yBands.p05up - S0) / S0 * 100);
-  const plDownside1y = ((S0 - pl1yBands.p05dn) / S0 * 100);
+  const plUpside1y = ((pl1yBands.fair - S0) / S0 * 100); // upside to fair value
+  const plDownside1y = ((S0 - pl1yBands.pSup) / S0 * 100); // downside to support
   const plRR1y = plDownside1y > 0 ? plUpside1y / plDownside1y : 99;
   const plWorstReturn1y = ((pl1yBands.pSup - S0) / S0 * 100);
   const plBestReturn1y = ((pl1yBands.p2up - S0) / S0 * 100);
@@ -2375,22 +2357,22 @@ export default function MMARDashboard() {
   } else if (sig < 0) {
     // BELOW FV
     if (pctThrough < 25) {
-      episodeCallout = `BTC has been in ${episodeHistory.label} territory for ${episodeDays} days. The ${nEps} previous episodes of this type lasted ${durRange} days. It's early — ${nLonger} of ${nEps} episodes lasted longer than this.${sigWorsening ? " σ is still moving away from fair value, suggesting the bottom may not be in yet." : ""}${sigImproving ? " However, σ is already improving — if this holds, it resembles the shorter episodes (${episodeHistory.shortAvg}d avg)." : ""}`;
+      episodeCallout = `BTC has been in ${episodeHistory.label} territory for ${episodeDays} days. The ${nEps} previous episodes of this type lasted ${durRange} days. It's early — ${nLonger} of ${nEps} episodes lasted longer than this.${sigWorsening ? " The price is still drifting further from fair value, suggesting the bottom may not be in yet." : ""}${sigImproving ? " However, The price is already moving back toward fair value — if this holds, it resembles the shorter episodes (${episodeHistory.shortAvg}d avg)." : ""}`;
     } else if (!pastBranchPoint) {
       episodeCallout = `Day ${episodeDays}: longer than ${nShorter} of ${nEps} historical episodes. The short bounces (${episodeHistory.shortAvg}d avg) would have ended by now${nShorter > 0 ? ` — ${nShorter} of ${nEps} did` : ""}. If we're still here past day ~${episodeHistory.branchDay}, the pattern matches a crypto winter (${episodeHistory.longAvg}d avg).${isDeepEnough ? ` The depth (${episodePeak.toFixed(2)}σ) suggests the longer scenario.` : ` The depth (${episodePeak.toFixed(2)}σ) is relatively shallow — still consistent with a bounce.`}`;
     } else if (pctThrough < 80) {
-      episodeCallout = `Day ${episodeDays}: past the branch point (day ${episodeHistory.branchDay}). This is now a structurally long episode — only the ${nLonger} longest historical episodes (${longerEpisodes.join(", ")}d) went further. Every time BTC stayed below fair value this long, the eventual rally was 200–400%.${sigImproving ? " σ is improving — the turn may be forming." : ""}`;
+      episodeCallout = `Day ${episodeDays}: past the branch point (day ${episodeHistory.branchDay}). This is now a structurally long episode — only the ${nLonger} longest historical episodes (${longerEpisodes.join(", ")}d) went further. Every time BTC stayed below fair value this long, the eventual rally was 200–400%.${sigImproving ? " The price is starting to move back toward fair value — the turn may be forming." : ""}`;
     } else {
       episodeCallout = `Day ${episodeDays}: longer than ${pctThrough}% of all historical ${episodeHistory.label} episodes. ${nLonger === 0 ? "This is unprecedented — no previous episode lasted this long." : `Only ${nLonger} episode${nLonger > 1 ? "s" : ""} went further.`} Every time BTC was this far into a discount episode, the subsequent 12-month return exceeded +150%. Statistically, the reversion is imminent.`;
     }
   } else {
     // ABOVE FV
     if (pctThrough < 25) {
-      episodeCallout = `BTC has been in ${episodeHistory.label} territory for ${episodeDays} days. Previous episodes lasted ${durRange} days. It's early in the move — ${nLonger} of ${nEps} episodes lasted longer.${sigImproving ? " σ is cooling, which could signal an early exit." : ""}${sigWorsening ? " σ is still expanding — the move has momentum." : ""}`;
+      episodeCallout = `BTC has been in ${episodeHistory.label} territory for ${episodeDays} days. Previous episodes lasted ${durRange} days. It's early in the move — ${nLonger} of ${nEps} episodes lasted longer.${sigImproving ? " The price is cooling off, which could signal an early exit." : ""}${sigWorsening ? " The price is still pushing higher — the move has momentum." : ""}`;
     } else if (!pastBranchPoint) {
       episodeCallout = `Day ${episodeDays}: the short spikes (${episodeHistory.shortAvg}d avg) would be correcting by now — ${nShorter} of ${nEps} already did. If we cross day ~${episodeHistory.branchDay} without correcting, history says this becomes a full bull run (${episodeHistory.longAvg}d avg).${isDeepEnough ? ` The peak of ${episodePeak.toFixed(2)}σ is in bull run territory.` : ` The peak of ${episodePeak.toFixed(2)}σ is modest — more consistent with a spike.`}`;
     } else if (pctThrough < 80) {
-      episodeCallout = `Day ${episodeDays}: past the branch point. This is a full cycle — only extended bull runs (${longerEpisodes.join(", ")}d) lasted longer. The correction risk grows with each passing day. Historically, the drawdown from these levels was 40–70%.${sigImproving ? " σ is cooling, which is an early warning." : ""}`;
+      episodeCallout = `Day ${episodeDays}: past the branch point. This is a full cycle — only extended bull runs (${longerEpisodes.join(", ")}d) lasted longer. The correction risk grows with each passing day. Historically, the drawdown from these levels was 40–70%.${sigImproving ? " The price is starting to cool off — an early warning sign." : ""}`;
     } else {
       episodeCallout = `Day ${episodeDays}: longer than ${pctThrough}% of all historical ${episodeHistory.label} episodes. ${nLonger === 0 ? "No previous episode lasted this long." : `Only ${nLonger} went further.`} The risk of a sharp correction is at maximum. Every overheated episode that lasted this long ended with a 50–70% drawdown within 6 months.`;
     }
@@ -2488,23 +2470,28 @@ export default function MMARDashboard() {
       hurstScore * 0.05
     );
 
-    // Map composite to verdict
-    let answer, answerColor, answerSub, confidence;
-    if (composite > 0.5) {
+    // Map composite to verdict: binary YES/NO + nuanced subtitle
+    let answer, answerColor, answerSub, confidence, subtitle, subtitleColor;
+    if (composite > 0.6) {
       answer = "YES"; answerColor = "#27AE60"; confidence = "high";
-      answerSub = composite > 0.75 ? "Strong buy signal across all indicators." : "Most signals align favorably.";
+      subtitle = "Strong Buy"; subtitleColor = "#1B8A4A";
+      answerSub = "Bitcoin is cheap by every measure. This is the kind of entry you don't get often.";
     } else if (composite > 0.2) {
       answer = "YES"; answerColor = "#27AE60"; confidence = "moderate";
-      answerSub = "The balance of signals leans positive.";
-    } else if (composite > -0.1) {
-      answer = "CAUTIOUSLY"; answerColor = "#F2994A"; confidence = "low";
-      answerSub = "Mixed signals. Small position or wait for a better setup.";
-    } else if (composite > -0.35) {
-      answer = "NOT NOW"; answerColor = "#EB5757"; confidence = "moderate";
-      answerSub = "More signals point to risk than opportunity right now.";
+      subtitle = "Buy"; subtitleColor = "#27AE60";
+      answerSub = "The odds are in your favor. More upside than downside from here.";
+    } else if (composite > -0.05) {
+      answer = "NO"; answerColor = "#F2994A"; confidence = "low";
+      subtitle = "Hold"; subtitleColor = "#E8A838";
+      answerSub = "Fair price. Not a bargain, not expensive. If you own it, keep it.";
+    } else if (composite > -0.3) {
+      answer = "NO"; answerColor = "#EB5757"; confidence = "moderate";
+      subtitle = "Wait"; subtitleColor = "#F2994A";
+      answerSub = "The risk/reward isn't great right now. Better entries are likely coming.";
     } else {
-      answer = "NOT NOW"; answerColor = "#EB5757"; confidence = "high";
-      answerSub = "Multiple indicators suggest waiting for a correction.";
+      answer = "NO"; answerColor = "#EB5757"; confidence = "high";
+      subtitle = "Sell"; subtitleColor = "#EB5757";
+      answerSub = "Bitcoin is expensive and the clock is ticking. Reduce exposure.";
     }
 
     // Signal breakdown for transparency
@@ -2518,39 +2505,38 @@ export default function MMARDashboard() {
       { name: "Trend (Hurst)", score: hurstScore, weight: 5, detail: `H=${H.toFixed(2)} — ${H > 0.6 ? "persistent" : "weak"}` },
     ];
 
-    // Explanation paragraphs
+    // Explanation paragraphs — plain English, no jargon
     const paras = [];
+    const regimeNote = domRegime.id === "bull" ? "in a bull run" : domRegime.id === "bear" ? "in a bear market" : domRegime.id === "accum" ? "in an accumulation phase" : domRegime.id === "recov" ? "in early recovery" : "in a ranging market";
 
-    // Situation + valuation
+    // 1. Where you are (one sentence, plain)
     if (sig > 1.8) {
-      paras.push(`Bitcoin at ${fmtK(S0)} is ${Math.abs(deviationPct).toFixed(0)}% above its long-term fair value of ${fmtK(plToday)}. Historically, when it gets this stretched, corrections follow.`);
+      paras.push(`Bitcoin at ${fmtK(S0)} is ${Math.abs(deviationPct).toFixed(0)}% above where the model says it should be (${fmtK(plToday)}). That's expensive — every time BTC got this stretched in the past, a correction followed.`);
     } else if (sig > 0.8) {
-      paras.push(`Bitcoin at ${fmtK(S0)} is running about ${Math.abs(deviationPct).toFixed(0)}% above fair value (${fmtK(plToday)}). Not in bubble territory yet, but you're paying a premium.`);
+      paras.push(`Bitcoin at ${fmtK(S0)} is ${Math.abs(deviationPct).toFixed(0)}% above its fair value of ${fmtK(plToday)}. You're paying a premium. Not bubble territory yet, but the easy money has been made.`);
     } else if (sig > -0.5) {
-      paras.push(`Bitcoin at ${fmtK(S0)} is ${Math.abs(deviationPct).toFixed(0)}% ${deviationPct >= 0 ? "above" : "below"} the model's fair value of ${fmtK(plToday)}. That's right in the normal range — a fair price.`);
+      paras.push(`Bitcoin at ${fmtK(S0)} is ${Math.abs(deviationPct).toFixed(0)}% ${deviationPct >= 0 ? "above" : "below"} its fair value of ${fmtK(plToday)}. That's a fair price — right in the middle of the normal range.`);
     } else {
-      paras.push(`Bitcoin at ${fmtK(S0)} is ${Math.abs(deviationPct).toFixed(0)}% below the model's fair value of ${fmtK(plToday)}. These are the entries people look back on and wish they'd sized up.`);
+      paras.push(`Bitcoin at ${fmtK(S0)} is ${Math.abs(deviationPct).toFixed(0)}% below its fair value of ${fmtK(plToday)}. It's on sale. These are the entries people look back on and wish they'd sized up.`);
     }
 
-    // PL + MC projections
-    paras.push(`The Power Law puts fair value at ${fmtK(pl1yFuture)} in 1 year (${pl1yReturn >= 0 ? "+" : ""}${pl1yReturn.toFixed(0)}%) and ${fmtK(pl3yFuture)} in 3 years (${pl3yReturn >= 0 ? "+" : ""}${pl3yReturn.toFixed(0)}%). The Monte Carlo median is ${mc1yMedian >= 0 ? "+" : ""}${mc1yMedian.toFixed(0)}% at 1 year and ${mc3yMedian >= 0 ? "+" : ""}${mc3yMedian.toFixed(0)}% at 3 years.`);
-
-    // Worst case
+    // 2. What the model expects (projections + worst case, one paragraph)
     const mcWorst1y = loss1y?.p5 ? ((loss1y.p5 - S0) / S0 * 100) : -50;
     const mcWorst3y = loss3y?.p5 ? ((loss3y.p5 - S0) / S0 * 100) : -30;
-    paras.push(`Worst case: the PL's support floor in 1 year is ${fmtK(pl1yBands.pSup)} (${plWorstReturn1y >= 0 ? "+" : ""}${plWorstReturn1y.toFixed(0)}%). The MC bottom 5% of paths: ${fmtK(loss1y?.p5 || S0 * 0.5)} (${mcWorst1y.toFixed(0)}%) in 1 year, ${fmtK(loss3y?.p5 || S0 * 0.5)} (${mcWorst3y >= 0 ? "+" : ""}${mcWorst3y.toFixed(0)}%) in 3 years.${mcWorst3y > 0 ? " Even the worst-case simulation is in profit at 3 years." : ""}`);
+    const supportPrice = Math.exp(Math.log(plToday) + resFloor);
+    const maxDownside = ((S0 - supportPrice) / S0 * 100);
+    paras.push(`If you buy today and hold 1 year, the model's base case is ${fmtK(pl1yFuture)} (${pl1yReturn >= 0 ? "+" : ""}${pl1yReturn.toFixed(0)}%). The worst case — the lowest Bitcoin has ever gone relative to its trend — puts you at ${fmtK(supportPrice)} (−${maxDownside.toFixed(0)}%). Over 3 years, the target is ${fmtK(pl3yFuture)} (${pl3yReturn >= 0 ? "+" : ""}${pl3yReturn.toFixed(0)}%).${mcWorst3y > 0 ? " Even in the worst 5% of simulations, you're in profit at 3 years." : ""}`);
 
-    // Short-term + regime + environment
-    const regimeNote = domRegime.id === "bull" ? "in a bull run" : domRegime.id === "bear" ? "in a bear market" : domRegime.id === "accum" ? "in an accumulation phase" : domRegime.id === "recov" ? "in early recovery" : "in a ranging market";
-    paras.push(episodeCallout || `Bitcoin is near its structural fair value. The market is ${regimeNote}, with ${temp.label.toLowerCase()} conditions.`);
+    // 3. The timing (episode + action, plain)
+    paras.push(episodeCallout || `Bitcoin is near its structural fair value. The market is ${regimeNote}.`);
     if (Math.abs(sig) >= 0.15 && conditionalRemaining > 0) {
-      paras.push(`Conditional estimate: given ${episodeDays} days in this episode, the median time remaining to fair value is ~${Math.round(conditionalRemaining / 30)} months (range: ${Math.round(Math.max(0, conditionalFast) / 30)}–${Math.round(conditionalSlow / 30)}m). σ is ${sigImproving ? "improving (moving toward FV)" : sigWorsening ? "worsening (moving away from FV)" : "flat"}, and the episode depth of ${episodePeak.toFixed(2)}σ is ${isDeepEnough ? "consistent with a longer structural episode" : "relatively shallow, consistent with a shorter bounce"}.${H > 0.6 ? ` Hurst persistence is high (H=${H.toFixed(2)}), so current direction has momentum.` : ""}`);
+      paras.push(`Based on how long previous episodes lasted, the model estimates about ${Math.round(conditionalRemaining / 30)} more months before Bitcoin returns to fair value. ${sigImproving ? "The trend is already improving — it could be faster." : sigWorsening ? "The trend is still worsening — it could take longer." : "The trend is flat — patience required."}`);
     }
 
-    // Probabilities
-    paras.push(`Your probability of being at a loss after 1 year: ~${l1y.toFixed(0)}%. At 3 years: ~${l3y.toFixed(0)}%.${l3y < 5 ? " Time solves everything at these levels." : l3y < 15 ? " The longer you hold, the better the odds." : ""}`);
+    // 4. Your risk (one sentence)
+    paras.push(`Your chance of being at a loss after 1 year: ~${l1y.toFixed(0)}%. After 3 years: ~${l3y.toFixed(0)}%.${l3y < 5 ? " Time is on your side." : l3y < 15 ? " The longer you hold, the better the odds." : ""}`);
 
-    return { answer, answerColor, answerSub, composite, confidence, signals, paras };
+    return { answer, answerColor, answerSub, subtitle, subtitleColor, composite, confidence, signals, paras };
   }
 
   const buyVerdict = generateVerdict();
@@ -2579,7 +2565,7 @@ export default function MMARDashboard() {
     { label: "Slightly overheated", price: +Math.exp(Math.log(plToday) + resMean + 0.5 * resStd).toFixed(0), color: "#E8A838", sigma: "+0.5σ" },
     { label: "Fair value (Power Law)", price: plToday, color: "#27AE60", sigma: "0" },
     { label: "Mild discount", price: +Math.exp(Math.log(plToday) + resMean - 0.5 * resStd).toFixed(0), color: "#56CCF2", sigma: "−0.5σ" },
-    { label: "Support (RANSAC floor)", price: +Math.exp(Math.log(plToday) + resFloor).toFixed(0), color: "#2F80ED", sigma: `${resFloorSigma.toFixed(1)}σ` },
+    { label: "Support floor", price: +Math.exp(Math.log(plToday) + resFloor).toFixed(0), color: "#2F80ED", sigma: `${resFloorSigma.toFixed(1)}σ` },
   ];
 
   // PL chart
@@ -2694,13 +2680,16 @@ export default function MMARDashboard() {
 
             {/* YES / NO */}
             <div style={{ padding: "24px 0 20px", textAlign: "center" }}>
-              <div style={{ fontSize: 52, fontWeight: 800, color: buyVerdict.answerColor, letterSpacing: "-0.03em", lineHeight: 1, fontFamily: "'DM Sans', sans-serif" }}>
+              <div style={{ fontSize: 56, fontWeight: 800, color: buyVerdict.answerColor, letterSpacing: "-0.03em", lineHeight: 1, fontFamily: "'DM Sans', sans-serif" }}>
                 {buyVerdict.answer}
               </div>
-              <div style={{ fontSize: 14, color: "#6B6B6B", marginTop: 10 }}>
+              <div style={{ fontSize: 20, fontWeight: 700, color: buyVerdict.subtitleColor, marginTop: 8, letterSpacing: "0.02em" }}>
+                {buyVerdict.subtitle}
+              </div>
+              <div style={{ fontSize: 14, color: "#6B6B6B", marginTop: 10, lineHeight: 1.5, maxWidth: 400, margin: "10px auto 0" }}>
                 {buyVerdict.answerSub}
               </div>
-              <div style={{ fontSize: 11, color: "#BFBFBA", marginTop: 6 }}>
+              <div style={{ fontSize: 11, color: "#BFBFBA", marginTop: 8 }}>
                 Composite score: {(buyVerdict.composite * 100).toFixed(0)}/100 · Confidence: {buyVerdict.confidence}
               </div>
             </div>
@@ -2748,8 +2737,8 @@ export default function MMARDashboard() {
               <div style={{ fontSize: 36, fontWeight: 800, color: buyVerdict.answerColor, letterSpacing: "-0.03em", lineHeight: 1, fontFamily: "'DM Sans', sans-serif" }}>
                 {buyVerdict.answer}
               </div>
-              <div style={{ fontSize: 13, color: "#6B6B6B", marginTop: 8 }}>
-                {buyVerdict.answerSub}
+              <div style={{ fontSize: 16, fontWeight: 700, color: buyVerdict.subtitleColor, marginTop: 6 }}>
+                {buyVerdict.subtitle}
               </div>
             </div>
 
@@ -2818,7 +2807,7 @@ export default function MMARDashboard() {
                 <span style={{ fontSize: 11, fontWeight: 600, color: "#9B9A97", textTransform: "uppercase", letterSpacing: "0.06em" }}>Power Law — 1 Year Forward</span>
               </div>
               <div style={{ fontSize: 12, color: "#9B9A97", marginBottom: 14, lineHeight: 1.5 }}>
-                Where the structural model places Bitcoin in 1 year. No simulation — just the long-term trajectory and its historical deviation bands.
+                Where the model places Bitcoin in 1 year, from the best case (bubble peak) to the worst case (historical support floor).
               </div>
               <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 14 }}>
                 <span style={{ fontSize: 12, color: "#9B9A97" }}>Fair value in 1Y:</span>
@@ -2827,11 +2816,11 @@ export default function MMARDashboard() {
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 0, marginBottom: 14 }}>
                 {[
-                  { label: "Bubble (+2σ)", price: pl1yBands.p2up, color: "#EB5757" },
-                  { label: "Ceiling (+1σ)", price: pl1yBands.p1up, color: "#F2994A" },
+                  { label: "Bubble zone", price: pl1yBands.p2up, color: "#EB5757" },
+                  { label: "Cycle ceiling", price: pl1yBands.p1up, color: "#F2994A" },
                   { label: "Fair value", price: pl1yBands.fair, color: "#27AE60" },
-                  { label: "Discount (−0.5σ)", price: pl1yBands.p05dn, color: "#56CCF2" },
-                  { label: "Support (floor)", price: pl1yBands.pSup, color: "#2F80ED" },
+                  { label: "Mild discount", price: pl1yBands.p05dn, color: "#56CCF2" },
+                  { label: "Support floor", price: pl1yBands.pSup, color: "#2F80ED" },
                 ].map(({ label, price, color }, i) => {
                   const pct = ((price - S0) / S0 * 100);
                   return (
@@ -2850,11 +2839,11 @@ export default function MMARDashboard() {
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, padding: "12px 14px", background: "#FFF", borderRadius: 6, border: "1px solid #F1F1EF" }}>
                 <div>
-                  <div style={{ fontSize: 10, color: "#9B9A97", marginBottom: 3 }}>Upside to +0.5σ</div>
-                  <div style={{ fontSize: 16, fontWeight: 700, color: "#27AE60", fontFamily: "'DM Mono', monospace" }}>+{plUpside1y.toFixed(0)}%</div>
+                  <div style={{ fontSize: 10, color: "#9B9A97", marginBottom: 3 }}>Upside to FV</div>
+                  <div style={{ fontSize: 16, fontWeight: 700, color: "#27AE60", fontFamily: "'DM Mono', monospace" }}>{plUpside1y >= 0 ? "+" : ""}{plUpside1y.toFixed(0)}%</div>
                 </div>
                 <div>
-                  <div style={{ fontSize: 10, color: "#9B9A97", marginBottom: 3 }}>Downside to −0.5σ</div>
+                  <div style={{ fontSize: 10, color: "#9B9A97", marginBottom: 3 }}>Downside to support</div>
                   <div style={{ fontSize: 16, fontWeight: 700, color: plDownside1y > 0 ? "#EB5757" : "#27AE60", fontFamily: "'DM Mono', monospace" }}>{plDownside1y > 0 ? `−${plDownside1y.toFixed(0)}%` : `+${Math.abs(plDownside1y).toFixed(0)}%`}</div>
                 </div>
                 <div>
@@ -2930,11 +2919,11 @@ export default function MMARDashboard() {
             </div>
             <div className="legend-row">
               {[
-                { color: "#EB5757", label: "Bubble (+2σ)", dash: false },
-                { color: "#F2994A", label: "Ceiling (+1σ)", dash: true },
-                { color: "#E8A838", label: "+0.5σ", dash: true },
+                { color: "#EB5757", label: "Bubble zone", dash: false },
+                { color: "#F2994A", label: "Cycle ceiling", dash: true },
+                { color: "#E8A838", label: "Slightly warm", dash: true },
                 { color: "#27AE60", label: "Fair Value", dash: false },
-                { color: "#56CCF2", label: "−0.5σ", dash: true },
+                { color: "#56CCF2", label: "Mild discount", dash: true },
                 { color: "#2F80ED", label: "Support", dash: false },
                 { color: "#37352F", label: "BTC Price", dash: false },
               ].map(({ color, dash, label }) => (
@@ -2961,6 +2950,80 @@ export default function MMARDashboard() {
                   <Line type="monotone" dataKey="lPrice" stroke="#37352F" strokeWidth={2.5} dot={false} name="BTC" connectNulls />
                 </LineChart>
               </ResponsiveContainer>
+            </div>
+          </Toggle>
+
+          <Divider />
+
+          <Toggle label="Key Price Levels" open={openSections.levels} onToggle={() => toggleSection("levels")} count={levels.length}>
+            <p style={{ fontSize: 13, color: "#6B6B6B", lineHeight: 1.6, margin: "0 0 14px" }}>
+              These are the structurally important price levels derived from the Power Law model. They act as gravitational anchors across market cycles.
+            </p>
+            <div style={{ border: "1px solid #E8E5E0", borderRadius: 8, overflow: "hidden" }}>
+              {levels.map(({ label, price, color, sigma }, i) => {
+                const pctFromSpot = ((price - S0) / S0 * 100);
+                const isNear = Math.abs(pctFromSpot) < 10;
+                return (
+                  <div key={label} style={{
+                    display: "grid", gridTemplateColumns: "auto 1fr auto auto",
+                    alignItems: "center", gap: 10, padding: "12px 12px",
+                    background: isNear ? "#FAFAF8" : "#FFF",
+                    borderBottom: i < levels.length - 1 ? "1px solid #F1F1EF" : "none",
+                  }}>
+                    <Dot color={color} size={10} />
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: 13, fontWeight: 500, color: "#37352F" }}>{label}</div>
+                      <div style={{ fontSize: 11, color: "#9B9A97", fontFamily: "'DM Mono', monospace" }}>{sigma}</div>
+                    </div>
+                    <div style={{ fontSize: 16, fontWeight: 600, color: "#37352F", textAlign: "right", fontFamily: "'DM Mono', monospace" }}>{fmtK(price)}</div>
+                    <div style={{ fontSize: 12, color: pctFromSpot >= 0 ? "#27AE60" : "#EB5757", textAlign: "right", minWidth: 60 }}>
+                      {pctFromSpot >= 0 ? "+" : ""}{pctFromSpot.toFixed(0)}%
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </Toggle>
+
+          <Divider />
+
+          <Toggle label="Power Law — Forward Projections" open={openSections.plforward} onToggle={() => toggleSection("plforward")}>
+            <p style={{ fontSize: 13, color: "#6B6B6B", lineHeight: 1.6, margin: "0 0 14px" }}>
+              Where the Power Law model places fair value at each horizon, with the full σ-band structure. All percentages are relative to today's price of {fmtK(S0)}.
+            </p>
+            <div className="table-scroll" style={{ border: "1px solid #E8E5E0", borderRadius: 8, overflow: "hidden" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                <thead>
+                  <tr style={{ background: "#FAFAF8" }}>
+                    {[`Horizon`, `Support`, `Discount`, `Fair Value`, `Ceiling`, `Bubble`].map((h, i) => (
+                      <th key={h} style={{ padding: "9px 10px", textAlign: i === 0 ? "left" : "right", color: ["", "#56CCF2", "#2F80ED", "#27AE60", "#F2994A", "#EB5757"][i] || "#9B9A97", fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em", borderBottom: "1px solid #E8E5E0", whiteSpace: "nowrap" }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {plForwardHorizons.map(h => {
+                    const fmtCell = (price) => {
+                      const pct = ((price - S0) / S0 * 100);
+                      return { price, pct };
+                    };
+                    const cells = [fmtCell(h.pSup), fmtCell(h.p05dn), fmtCell(h.plF), fmtCell(h.p1up), fmtCell(h.p2up)];
+                    const cellColors = ["#56CCF2", "#2F80ED", "#27AE60", "#F2994A", "#EB5757"];
+                    return (
+                      <tr key={h.label} style={{ borderBottom: "1px solid #F1F1EF" }}>
+                        <td style={{ padding: "10px 10px", fontWeight: 500, whiteSpace: "nowrap" }}>{h.label}</td>
+                        {cells.map((c, i) => (
+                          <td key={i} style={{ padding: "10px 10px", textAlign: "right" }}>
+                            <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, fontWeight: i === 2 ? 600 : 400 }}>{fmtK(c.price)}</div>
+                            <div style={{ fontSize: 10, color: c.pct >= 0 ? cellColors[i] : "#EB5757", marginTop: 1 }}>
+                              {c.pct >= 0 ? "+" : ""}{c.pct.toFixed(0)}%
+                            </div>
+                          </td>
+                        ))}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
           </Toggle>
 
@@ -3014,76 +3077,137 @@ export default function MMARDashboard() {
 
           <Divider />
 
-          <Toggle label="Key Price Levels" open={openSections.levels} onToggle={() => toggleSection("levels")} count={levels.length}>
+          <Toggle label="Time to Fair Value" open={openSections.scenarios} onToggle={() => toggleSection("scenarios")} count={ttfvLabel}>
             <p style={{ fontSize: 13, color: "#6B6B6B", lineHeight: 1.6, margin: "0 0 14px" }}>
-              These are the structurally important price levels derived from the Power Law model. They act as gravitational anchors across market cycles.
+              How far into the current deviation episode are we? BTC has returned to fair value from every σ level in history — the question is when, not if.
             </p>
-            <div style={{ border: "1px solid #E8E5E0", borderRadius: 8, overflow: "hidden" }}>
-              {levels.map(({ label, price, color, sigma }, i) => {
-                const pctFromSpot = ((price - S0) / S0 * 100);
-                const isNear = Math.abs(pctFromSpot) < 10;
-                return (
-                  <div key={label} style={{
-                    display: "grid", gridTemplateColumns: "auto 1fr auto auto",
-                    alignItems: "center", gap: 10, padding: "12px 12px",
-                    background: isNear ? "#FAFAF8" : "#FFF",
-                    borderBottom: i < levels.length - 1 ? "1px solid #F1F1EF" : "none",
-                  }}>
-                    <Dot color={color} size={10} />
-                    <div style={{ minWidth: 0 }}>
-                      <div style={{ fontSize: 13, fontWeight: 500, color: "#37352F" }}>{label}</div>
-                      <div style={{ fontSize: 11, color: "#9B9A97", fontFamily: "'DM Mono', monospace" }}>{sigma}</div>
+
+            {Math.abs(sig) < 0.15 ? (
+              <Callout emoji="✅" bg="#27AE6010" border="#27AE60">
+                <div style={{ fontWeight: 700, fontSize: 18, color: "#27AE60", marginBottom: 2 }}>At fair value</div>
+                <div style={{ fontSize: 13, color: "#6B6B6B" }}>Bitcoin is trading at its structural equilibrium. No active episode.</div>
+              </Callout>
+            ) : (
+              <>
+                {/* Episode progress gauge */}
+                <div style={{ padding: "16px 18px", background: "#FAFAF8", border: "1px solid #E8E5E0", borderRadius: 10, marginBottom: 14 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
+                    <div>
+                      <div style={{ fontSize: 11, color: "#9B9A97", marginBottom: 2 }}>Current episode</div>
+                      <div style={{ fontSize: 22, fontWeight: 700, fontFamily: "'DM Mono', monospace", color: "#37352F" }}>Day {episodeDays}</div>
                     </div>
-                    <div style={{ fontSize: 16, fontWeight: 600, color: "#37352F", textAlign: "right", fontFamily: "'DM Mono', monospace" }}>{fmtK(price)}</div>
-                    <div style={{ fontSize: 12, color: pctFromSpot >= 0 ? "#27AE60" : "#EB5757", textAlign: "right", minWidth: 60 }}>
-                      {pctFromSpot >= 0 ? "+" : ""}{pctFromSpot.toFixed(0)}%
+                    <div style={{ textAlign: "right" }}>
+                      <div style={{ fontSize: 11, color: "#9B9A97", marginBottom: 2 }}>{sig < 0 ? "Below" : "Above"} FV since</div>
+                      <div style={{ fontSize: 14, fontWeight: 600, color: "#37352F" }}>{episodeStart || "—"}</div>
                     </div>
                   </div>
-                );
-              })}
-            </div>
-          </Toggle>
+                  {/* Status pills */}
+                  <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
+                    <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 10, background: sigImproving ? "#27AE6015" : sigWorsening ? "#EB575715" : "#F1F1EF", color: sigImproving ? "#27AE60" : sigWorsening ? "#EB5757" : "#9B9A97", fontWeight: 600 }}>
+                      σ {sigImproving ? "↑ improving" : sigWorsening ? "↓ worsening" : "→ flat"}
+                    </span>
+                    <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 10, background: "#F1F1EF", color: "#9B9A97" }}>
+                      peak: {episodePeak.toFixed(2)}σ {isDeepEnough ? "(deep)" : "(shallow)"}
+                    </span>
+                    {pastBranchPoint && <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 10, background: sig < 0 ? "#2F80ED15" : "#F2994A15", color: sig < 0 ? "#2F80ED" : "#F2994A", fontWeight: 600 }}>
+                      past branch point ({episodeHistory.branchDay}d)
+                    </span>}
+                  </div>
 
-          <Divider />
+                  {/* Visual progress bar */}
+                  <div style={{ marginBottom: 8 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                      <span style={{ fontSize: 10, color: "#9B9A97" }}>Episode start</span>
+                      <span style={{ fontSize: 10, color: pctThrough > 75 ? "#27AE60" : "#9B9A97", fontWeight: pctThrough > 75 ? 600 : 400 }}>
+                        {pctThrough}% through historical median
+                      </span>
+                    </div>
+                    <div style={{ position: "relative", height: 24, background: "#F1F1EF", borderRadius: 12, overflow: "hidden" }}>
+                      {/* Historical episodes as markers */}
+                      {episodeHistory.durations.map((d, i) => {
+                        const maxD = Math.max(...episodeHistory.durations, episodeDays) * 1.1;
+                        const pos = (d / maxD) * 100;
+                        return <div key={i} style={{ position: "absolute", left: `${pos}%`, top: 0, bottom: 0, width: 2, background: "#BFBFBA", opacity: 0.4 }} />;
+                      })}
+                      {/* Current progress */}
+                      <div style={{
+                        position: "absolute", left: 0, top: 0, bottom: 0,
+                        width: `${Math.min(100, (episodeDays / (Math.max(...episodeHistory.durations, episodeDays) * 1.1)) * 100)}%`,
+                        background: `linear-gradient(90deg, ${sig < 0 ? "#2F80ED" : "#F2994A"}, ${sig < 0 ? "#56CCF2" : "#EB5757"})`,
+                        borderRadius: 12,
+                        transition: "width 0.5s ease",
+                      }} />
+                      {/* Median marker */}
+                      <div style={{
+                        position: "absolute",
+                        left: `${(episodeHistory.median / (Math.max(...episodeHistory.durations, episodeDays) * 1.1)) * 100}%`,
+                        top: -2, bottom: -2, width: 3, background: "#37352F", borderRadius: 2, zIndex: 2,
+                      }} />
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4 }}>
+                      <span style={{ fontSize: 9, color: "#BFBFBA" }}>0d</span>
+                      <span style={{ fontSize: 9, color: "#37352F", fontWeight: 600 }}>median: {episodeHistory.median}d</span>
+                      <span style={{ fontSize: 9, color: "#BFBFBA" }}>{Math.max(...episodeHistory.durations)}d</span>
+                    </div>
+                  </div>
 
-          <Toggle label="Power Law — Forward Projections" open={openSections.plforward} onToggle={() => toggleSection("plforward")}>
-            <p style={{ fontSize: 13, color: "#6B6B6B", lineHeight: 1.6, margin: "0 0 14px" }}>
-              Where the Power Law model places fair value at each horizon, with the full σ-band structure. All percentages are relative to today's price of {fmtK(S0)}.
-            </p>
-            <div className="table-scroll" style={{ border: "1px solid #E8E5E0", borderRadius: 8, overflow: "hidden" }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-                <thead>
-                  <tr style={{ background: "#FAFAF8" }}>
-                    {[`Horizon`, `Support`, `−0.5σ`, `Fair Value`, `+1σ Ceiling`, `+2σ Bubble`].map((h, i) => (
-                      <th key={h} style={{ padding: "9px 10px", textAlign: i === 0 ? "left" : "right", color: ["", "#56CCF2", "#2F80ED", "#27AE60", "#F2994A", "#EB5757"][i] || "#9B9A97", fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em", borderBottom: "1px solid #E8E5E0", whiteSpace: "nowrap" }}>{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {plForwardHorizons.map(h => {
-                    const fmtCell = (price) => {
-                      const pct = ((price - S0) / S0 * 100);
-                      return { price, pct };
-                    };
-                    const cells = [fmtCell(h.pSup), fmtCell(h.p05dn), fmtCell(h.plF), fmtCell(h.p1up), fmtCell(h.p2up)];
-                    const cellColors = ["#56CCF2", "#2F80ED", "#27AE60", "#F2994A", "#EB5757"];
+                  {/* Conditional estimate */}
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginTop: 12 }}>
+                    <div style={{ textAlign: "center" }}>
+                      <div style={{ fontSize: 9, color: "#BFBFBA", marginBottom: 2 }}>Optimistic</div>
+                      <div style={{ fontSize: 18, fontWeight: 700, fontFamily: "'DM Mono', monospace", color: "#27AE60" }}>{conditionalFast > 0 ? `${Math.round(conditionalFast / 30)}m` : "now"}</div>
+                      <div style={{ fontSize: 9, color: "#9B9A97" }}>{conditionalFast > 0 ? `${conditionalFast}d left` : "overdue"}</div>
+                    </div>
+                    <div style={{ textAlign: "center" }}>
+                      <div style={{ fontSize: 9, color: "#BFBFBA", marginBottom: 2 }}>Expected</div>
+                      <div style={{ fontSize: 18, fontWeight: 700, fontFamily: "'DM Mono', monospace", color: "#37352F" }}>{conditionalRemaining > 0 ? `${Math.round(conditionalRemaining / 30)}m` : "now"}</div>
+                      <div style={{ fontSize: 9, color: "#9B9A97" }}>{conditionalRemaining > 0 ? `${conditionalRemaining}d left` : "overdue"}</div>
+                    </div>
+                    <div style={{ textAlign: "center" }}>
+                      <div style={{ fontSize: 9, color: "#BFBFBA", marginBottom: 2 }}>Conservative</div>
+                      <div style={{ fontSize: 18, fontWeight: 700, fontFamily: "'DM Mono', monospace", color: "#F2994A" }}>{conditionalSlow > 0 ? `${Math.round(conditionalSlow / 30)}m` : "now"}</div>
+                      <div style={{ fontSize: 9, color: "#9B9A97" }}>{conditionalSlow > 0 ? `${conditionalSlow}d left` : "overdue"}</div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Insight callout */}
+                <Callout
+                  emoji={pctThrough > 80 ? "🔮" : pastBranchPoint ? "⚡" : pctThrough > 25 ? "⏱️" : "📊"}
+                  bg={pctThrough > 80 ? (sig < 0 ? "#27AE6010" : "#EB575710") : pastBranchPoint ? (sig < 0 ? "#2F80ED10" : "#F2994A10") : "#F1F1EF"}
+                  border={pctThrough > 80 ? (sig < 0 ? "#27AE60" : "#EB5757") : pastBranchPoint ? (sig < 0 ? "#2F80ED" : "#F2994A") : "#E8E5E0"}
+                >
+                  <div style={{ fontSize: 13, color: "#4F4F4F", lineHeight: 1.6 }}>{episodeCallout}</div>
+                </Callout>
+
+                {/* Historical episodes mini-chart */}
+                <div style={{ fontSize: 10, fontWeight: 600, color: "#9B9A97", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8, marginTop: 14 }}>Previous {episodeHistory.label} episodes</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                  {episodeHistory.durations.map((d, i) => {
+                    const maxD = Math.max(...episodeHistory.durations) * 1.05;
+                    const isCurrent = false;
                     return (
-                      <tr key={h.label} style={{ borderBottom: "1px solid #F1F1EF" }}>
-                        <td style={{ padding: "10px 10px", fontWeight: 500, whiteSpace: "nowrap" }}>{h.label}</td>
-                        {cells.map((c, i) => (
-                          <td key={i} style={{ padding: "10px 10px", textAlign: "right" }}>
-                            <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, fontWeight: i === 2 ? 600 : 400 }}>{fmtK(c.price)}</div>
-                            <div style={{ fontSize: 10, color: c.pct >= 0 ? cellColors[i] : "#EB5757", marginTop: 1 }}>
-                              {c.pct >= 0 ? "+" : ""}{c.pct.toFixed(0)}%
-                            </div>
-                          </td>
-                        ))}
-                      </tr>
+                      <div key={i} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <div style={{ width: 50, fontSize: 10, color: "#BFBFBA", fontFamily: "'DM Mono', monospace", textAlign: "right" }}>{d}d</div>
+                        <div style={{ flex: 1, height: 10, background: "#F1F1EF", borderRadius: 5, overflow: "hidden" }}>
+                          <div style={{ height: "100%", width: `${(d / maxD) * 100}%`, background: "#BFBFBA", borderRadius: 5, opacity: 0.5 }} />
+                        </div>
+                        <div style={{ width: 35, fontSize: 10, color: "#BFBFBA", fontFamily: "'DM Mono', monospace" }}>{Math.round(d / 30)}m</div>
+                      </div>
                     );
                   })}
-                </tbody>
-              </table>
-            </div>
+                  {/* Current episode bar */}
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <div style={{ width: 50, fontSize: 10, color: sig < 0 ? "#2F80ED" : "#F2994A", fontFamily: "'DM Mono', monospace", textAlign: "right", fontWeight: 700 }}>{episodeDays}d</div>
+                    <div style={{ flex: 1, height: 10, background: "#F1F1EF", borderRadius: 5, overflow: "hidden" }}>
+                      <div style={{ height: "100%", width: `${(episodeDays / (Math.max(...episodeHistory.durations) * 1.05)) * 100}%`, background: sig < 0 ? "#2F80ED" : "#F2994A", borderRadius: 5 }} />
+                    </div>
+                    <div style={{ width: 35, fontSize: 10, color: sig < 0 ? "#2F80ED" : "#F2994A", fontFamily: "'DM Mono', monospace", fontWeight: 700 }}>now</div>
+                  </div>
+                </div>
+                <p style={{ fontSize: 10, color: "#BFBFBA", textAlign: "center", marginTop: 6 }}>Grey bars: completed episodes. Colored bar: current. Black marker on gauge: historical median.</p>
+              </>
+            )}
           </Toggle>
 
           <Divider />
@@ -3231,141 +3355,6 @@ export default function MMARDashboard() {
                 </tbody>
               </table>
             </div>
-          </Toggle>
-
-          <Divider />
-
-          <Toggle label="Time to Fair Value" open={openSections.scenarios} onToggle={() => toggleSection("scenarios")} count={ttfvLabel}>
-            <p style={{ fontSize: 13, color: "#6B6B6B", lineHeight: 1.6, margin: "0 0 14px" }}>
-              How far into the current deviation episode are we? BTC has returned to fair value from every σ level in history — the question is when, not if.
-            </p>
-
-            {Math.abs(sig) < 0.15 ? (
-              <Callout emoji="✅" bg="#27AE6010" border="#27AE60">
-                <div style={{ fontWeight: 700, fontSize: 18, color: "#27AE60", marginBottom: 2 }}>At fair value</div>
-                <div style={{ fontSize: 13, color: "#6B6B6B" }}>Bitcoin is trading at its structural equilibrium. No active episode.</div>
-              </Callout>
-            ) : (
-              <>
-                {/* Episode progress gauge */}
-                <div style={{ padding: "16px 18px", background: "#FAFAF8", border: "1px solid #E8E5E0", borderRadius: 10, marginBottom: 14 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
-                    <div>
-                      <div style={{ fontSize: 11, color: "#9B9A97", marginBottom: 2 }}>Current episode</div>
-                      <div style={{ fontSize: 22, fontWeight: 700, fontFamily: "'DM Mono', monospace", color: "#37352F" }}>Day {episodeDays}</div>
-                    </div>
-                    <div style={{ textAlign: "right" }}>
-                      <div style={{ fontSize: 11, color: "#9B9A97", marginBottom: 2 }}>{sig < 0 ? "Below" : "Above"} FV since</div>
-                      <div style={{ fontSize: 14, fontWeight: 600, color: "#37352F" }}>{episodeStart || "—"}</div>
-                    </div>
-                  </div>
-                  {/* Status pills */}
-                  <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
-                    <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 10, background: sigImproving ? "#27AE6015" : sigWorsening ? "#EB575715" : "#F1F1EF", color: sigImproving ? "#27AE60" : sigWorsening ? "#EB5757" : "#9B9A97", fontWeight: 600 }}>
-                      σ {sigImproving ? "↑ improving" : sigWorsening ? "↓ worsening" : "→ flat"}
-                    </span>
-                    <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 10, background: "#F1F1EF", color: "#9B9A97" }}>
-                      peak: {episodePeak.toFixed(2)}σ {isDeepEnough ? "(deep)" : "(shallow)"}
-                    </span>
-                    {pastBranchPoint && <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 10, background: sig < 0 ? "#2F80ED15" : "#F2994A15", color: sig < 0 ? "#2F80ED" : "#F2994A", fontWeight: 600 }}>
-                      past branch point ({episodeHistory.branchDay}d)
-                    </span>}
-                  </div>
-
-                  {/* Visual progress bar */}
-                  <div style={{ marginBottom: 8 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-                      <span style={{ fontSize: 10, color: "#9B9A97" }}>Episode start</span>
-                      <span style={{ fontSize: 10, color: pctThrough > 75 ? "#27AE60" : "#9B9A97", fontWeight: pctThrough > 75 ? 600 : 400 }}>
-                        {pctThrough}% through historical median
-                      </span>
-                    </div>
-                    <div style={{ position: "relative", height: 24, background: "#F1F1EF", borderRadius: 12, overflow: "hidden" }}>
-                      {/* Historical episodes as markers */}
-                      {episodeHistory.durations.map((d, i) => {
-                        const maxD = Math.max(...episodeHistory.durations, episodeDays) * 1.1;
-                        const pos = (d / maxD) * 100;
-                        return <div key={i} style={{ position: "absolute", left: `${pos}%`, top: 0, bottom: 0, width: 2, background: "#BFBFBA", opacity: 0.4 }} />;
-                      })}
-                      {/* Current progress */}
-                      <div style={{
-                        position: "absolute", left: 0, top: 0, bottom: 0,
-                        width: `${Math.min(100, (episodeDays / (Math.max(...episodeHistory.durations, episodeDays) * 1.1)) * 100)}%`,
-                        background: `linear-gradient(90deg, ${sig < 0 ? "#2F80ED" : "#F2994A"}, ${sig < 0 ? "#56CCF2" : "#EB5757"})`,
-                        borderRadius: 12,
-                        transition: "width 0.5s ease",
-                      }} />
-                      {/* Median marker */}
-                      <div style={{
-                        position: "absolute",
-                        left: `${(episodeHistory.median / (Math.max(...episodeHistory.durations, episodeDays) * 1.1)) * 100}%`,
-                        top: -2, bottom: -2, width: 3, background: "#37352F", borderRadius: 2, zIndex: 2,
-                      }} />
-                    </div>
-                    <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4 }}>
-                      <span style={{ fontSize: 9, color: "#BFBFBA" }}>0d</span>
-                      <span style={{ fontSize: 9, color: "#37352F", fontWeight: 600 }}>median: {episodeHistory.median}d</span>
-                      <span style={{ fontSize: 9, color: "#BFBFBA" }}>{Math.max(...episodeHistory.durations)}d</span>
-                    </div>
-                  </div>
-
-                  {/* Conditional estimate */}
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginTop: 12 }}>
-                    <div style={{ textAlign: "center" }}>
-                      <div style={{ fontSize: 9, color: "#BFBFBA", marginBottom: 2 }}>Optimistic</div>
-                      <div style={{ fontSize: 18, fontWeight: 700, fontFamily: "'DM Mono', monospace", color: "#27AE60" }}>{conditionalFast > 0 ? `${Math.round(conditionalFast / 30)}m` : "now"}</div>
-                      <div style={{ fontSize: 9, color: "#9B9A97" }}>{conditionalFast > 0 ? `${conditionalFast}d left` : "overdue"}</div>
-                    </div>
-                    <div style={{ textAlign: "center" }}>
-                      <div style={{ fontSize: 9, color: "#BFBFBA", marginBottom: 2 }}>Expected</div>
-                      <div style={{ fontSize: 18, fontWeight: 700, fontFamily: "'DM Mono', monospace", color: "#37352F" }}>{conditionalRemaining > 0 ? `${Math.round(conditionalRemaining / 30)}m` : "now"}</div>
-                      <div style={{ fontSize: 9, color: "#9B9A97" }}>{conditionalRemaining > 0 ? `${conditionalRemaining}d left` : "overdue"}</div>
-                    </div>
-                    <div style={{ textAlign: "center" }}>
-                      <div style={{ fontSize: 9, color: "#BFBFBA", marginBottom: 2 }}>Conservative</div>
-                      <div style={{ fontSize: 18, fontWeight: 700, fontFamily: "'DM Mono', monospace", color: "#F2994A" }}>{conditionalSlow > 0 ? `${Math.round(conditionalSlow / 30)}m` : "now"}</div>
-                      <div style={{ fontSize: 9, color: "#9B9A97" }}>{conditionalSlow > 0 ? `${conditionalSlow}d left` : "overdue"}</div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Insight callout */}
-                <Callout
-                  emoji={pctThrough > 80 ? "🔮" : pastBranchPoint ? "⚡" : pctThrough > 25 ? "⏱️" : "📊"}
-                  bg={pctThrough > 80 ? (sig < 0 ? "#27AE6010" : "#EB575710") : pastBranchPoint ? (sig < 0 ? "#2F80ED10" : "#F2994A10") : "#F1F1EF"}
-                  border={pctThrough > 80 ? (sig < 0 ? "#27AE60" : "#EB5757") : pastBranchPoint ? (sig < 0 ? "#2F80ED" : "#F2994A") : "#E8E5E0"}
-                >
-                  <div style={{ fontSize: 13, color: "#4F4F4F", lineHeight: 1.6 }}>{episodeCallout}</div>
-                </Callout>
-
-                {/* Historical episodes mini-chart */}
-                <div style={{ fontSize: 10, fontWeight: 600, color: "#9B9A97", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8, marginTop: 14 }}>Previous {episodeHistory.label} episodes</div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-                  {episodeHistory.durations.map((d, i) => {
-                    const maxD = Math.max(...episodeHistory.durations) * 1.05;
-                    const isCurrent = false;
-                    return (
-                      <div key={i} style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <div style={{ width: 50, fontSize: 10, color: "#BFBFBA", fontFamily: "'DM Mono', monospace", textAlign: "right" }}>{d}d</div>
-                        <div style={{ flex: 1, height: 10, background: "#F1F1EF", borderRadius: 5, overflow: "hidden" }}>
-                          <div style={{ height: "100%", width: `${(d / maxD) * 100}%`, background: "#BFBFBA", borderRadius: 5, opacity: 0.5 }} />
-                        </div>
-                        <div style={{ width: 35, fontSize: 10, color: "#BFBFBA", fontFamily: "'DM Mono', monospace" }}>{Math.round(d / 30)}m</div>
-                      </div>
-                    );
-                  })}
-                  {/* Current episode bar */}
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <div style={{ width: 50, fontSize: 10, color: sig < 0 ? "#2F80ED" : "#F2994A", fontFamily: "'DM Mono', monospace", textAlign: "right", fontWeight: 700 }}>{episodeDays}d</div>
-                    <div style={{ flex: 1, height: 10, background: "#F1F1EF", borderRadius: 5, overflow: "hidden" }}>
-                      <div style={{ height: "100%", width: `${(episodeDays / (Math.max(...episodeHistory.durations) * 1.05)) * 100}%`, background: sig < 0 ? "#2F80ED" : "#F2994A", borderRadius: 5 }} />
-                    </div>
-                    <div style={{ width: 35, fontSize: 10, color: sig < 0 ? "#2F80ED" : "#F2994A", fontFamily: "'DM Mono', monospace", fontWeight: 700 }}>now</div>
-                  </div>
-                </div>
-                <p style={{ fontSize: 10, color: "#BFBFBA", textAlign: "center", marginTop: 6 }}>Grey bars: completed episodes. Colored bar: current. Black marker on gauge: historical median.</p>
-              </>
-            )}
           </Toggle>
 
           <Divider />
@@ -3871,112 +3860,97 @@ export default function MMARDashboard() {
 
           <Toggle label="What is the Bitcoin Power Law model?" open={openSections.faq_pl} onToggle={() => toggleSection("faq_pl")}>
             <div style={{ fontSize: 14, color: "#4F4F4F", lineHeight: 1.8 }}>
-              <p style={{ margin: "0 0 12px" }}>The Bitcoin Power Law model was discovered by physicist Giovanni Santostasi in 2019 and independently developed by Harold Christopher Burger in his "Power-Law Corridor of Growth" analysis. They found that when you plot Bitcoin's price against time on a logarithmic scale for both axes, the data points fall on a remarkably straight line going back to 2010. That straight line is a power law — the same type of mathematical relationship found in city population scaling, earthquake magnitude distributions, and network growth.</p>
-              <p style={{ margin: "0 0 12px" }}>In practical terms, the Power Law gives Bitcoin a "fair value" at any point in time based on its age. It doesn't predict short-term price action, but it defines a structural trajectory. The model fits over 16 years of daily data with an R-squared above 0.93, meaning it accounts for more than 93% of Bitcoin's historical price variation.</p>
-              <p style={{ margin: "0 0 0" }}>We measure how far the current price deviates from this line using standard deviations (σ). Deviations between +0.5σ and −0.5σ are the "fair value zone" where BTC spends most of its time. Beyond +2σ is historically extreme — every instance preceded a major correction. The support floor is derived from a RANSAC robust fit that automatically excludes bubble peaks, matching the approach used by Burger/Santostasi. BTC has never sustained below this line in 13 years of liquid markets.</p>
+              <p style={{ margin: "0 0 12px" }}>The Bitcoin Power Law was discovered by physicist Giovanni Santostasi and independently developed by Harold Christopher Burger. When you plot Bitcoin's price against time on a log-log scale, the data falls on a remarkably straight line going back to 2010. This means Bitcoin's price grows as a power of time — the same relationship found in city population scaling, earthquake magnitudes, and network growth.</p>
+              <p style={{ margin: "0 0 12px" }}>In practical terms, the model gives Bitcoin a "fair value" at any point based on its age. It doesn't predict tomorrow's price, but it defines a structural trajectory that has held for 16 years with an R² above 0.91.</p>
+              <p style={{ margin: "0 0 0" }}>We use this to answer a simple question: is Bitcoin cheap or expensive right now? The price bands on the chart show where Bitcoin has historically traded relative to this trajectory. The "support floor" is derived from a RANSAC robust fit — a technique that automatically ignores bubble peaks to find the true floor. Bitcoin has never sustained below this line in 13 years of liquid markets.</p>
             </div>
           </Toggle>
           <Divider />
 
           <Toggle label="What does it mean that Bitcoin is fractal?" open={openSections.faq_fractal} onToggle={() => toggleSection("faq_fractal")}>
             <div style={{ fontSize: 14, color: "#4F4F4F", lineHeight: 1.8 }}>
-              <p style={{ margin: "0 0 12px" }}>Look at a Bitcoin price chart for one day, then zoom out to one week, one month, one year. They look statistically similar — the same pattern of spikes, consolidations, and drops repeating at every scale. This self-similarity is the hallmark of a fractal system, first described in financial markets by mathematician Benoît Mandelbrot.</p>
-              <p style={{ margin: "0 0 12px" }}>Two practical consequences follow. First, extreme price moves (crashes and parabolic rallies) happen far more often than traditional bell-curve models predict. A move that Gaussian statistics say should occur once in 10,000 years actually happens every few years in Bitcoin. Second, volatility clusters: periods of high volatility tend to be followed by more high volatility, and calm periods tend to persist. This is measurable and predictable.</p>
-              <p style={{ margin: "0 0 0" }}>This dashboard uses Mandelbrot's Multifractal Model of Asset Returns (MMAR) to capture these properties. The key parameters are the Hurst exponent (H), which measures trend persistence, and the intermittency coefficient (λ²), which measures volatility clustering intensity. Together they ensure the simulations produce realistic Bitcoin-like price paths, not the artificially smooth paths of conventional models.</p>
+              <p style={{ margin: "0 0 12px" }}>Look at a Bitcoin chart for one day, then zoom out to a week, a month, a year. They look statistically similar — the same spikes, consolidations, and drops at every scale. This is what mathematicians call fractal, first described in financial markets by Benoît Mandelbrot.</p>
+              <p style={{ margin: "0 0 12px" }}>Two consequences that matter for you: First, extreme moves (crashes and rallies) happen far more often than normal statistics predict. Second, volatility clusters — wild periods follow wild periods, and calm follows calm. This is measurable and the model accounts for it.</p>
+              <p style={{ margin: "0 0 0" }}>This dashboard uses Mandelbrot's Multifractal Model of Asset Returns (MMAR). The Hurst exponent measures whether trends persist or reverse. The intermittency coefficient measures how clustered volatility is. Together they produce realistic Bitcoin-like simulations, not the artificially smooth paths of textbook models.</p>
             </div>
           </Toggle>
           <Divider />
 
-          <Toggle label="How does the calculation methodology work, step by step?" open={openSections.faq_method} onToggle={() => toggleSection("faq_method")}>
+          <Toggle label="How does the calculation work?" open={openSections.faq_method} onToggle={() => toggleSection("faq_method")}>
             <div style={{ fontSize: 14, color: "#4F4F4F", lineHeight: 1.8 }}>
-              <p style={{ margin: "0 0 12px", fontWeight: 500, color: "#37352F" }}>The model runs a five-step pipeline, each step building on the previous one:</p>
-
-              <p style={{ margin: "0 0 12px" }}><strong style={{ color: "#37352F" }}>Step 1 — Power Law regression (weighted).</strong> We fit log(price) = a + b × log(days since genesis) using Weighted Least Squares across all data from 2010 to today. The weights follow an exponential decay with a ~4-year half-life: recent data from liquid, mature markets weighs more than early-era data from thin, unreliable exchanges. This prevents a $0.05 price from 2010 (traded between a handful of people) from having the same influence as a $70k price from 2024 (traded on venues with billions in daily volume). The output is the growth exponent b, the fair value curve, and the residuals. The σ bands are computed from unweighted residuals to preserve the full historical deviation range.</p>
-
-              <p style={{ margin: "0 0 12px" }}><strong style={{ color: "#37352F" }}>Step 2 — Fractal structure calibration.</strong> Using daily residual returns from the last ~4 years (a rolling window that adapts as new data arrives), we estimate two parameters. The Hurst exponent (H) is measured via Detrended Fluctuation Analysis (DFA-1), which is more robust than the classical R/S method for short and non-stationary series. DFA integrates the demeaned series, splits it into windows at multiple scales, fits a linear trend within each window, computes the RMS of the detrended fluctuations, and extracts H as the slope of log(F) vs log(scale). Both forward and backward window passes are used for better coverage. H above 0.5 indicates trend persistence, below 0.5 indicates mean-reversion. The intermittency parameter (λ²) is extracted from the multifractal partition function by fitting the scaling exponent τ(q) across moment orders q = −2 to 5 at time scales from 8 to 128 days. This captures how volatility concentrates at different frequencies. Standard financial models skip both measurements entirely and assume returns are independent and normally distributed.</p>
-
-              <p style={{ margin: "0 0 12px" }}><strong style={{ color: "#37352F" }}>Step 3 — Regime-switching mean-reversion.</strong> Instead of a single Ornstein-Uhlenbeck process with one fixed κ (which is the standard approach), we classify the market into two regimes using 30-day rolling absolute returns: a calm regime and a volatile regime. A separate κ is estimated for each regime via autoregression on the residuals belonging to that regime. In practice, the calm regime shows faster mean-reversion (shorter half-life: price corrects toward fair value relatively quickly) while the volatile regime shows slower reversion (longer half-life: deviations persist during turbulent periods, which is when trends and crashes extend further than a single-regime model expects). A Markov transition matrix is estimated from the historical regime sequence, and during simulation, the regime switches stochastically day by day according to these transition probabilities. Each regime also carries its own volatility scaling factor. This produces path dynamics that are qualitatively different from single-regime OU: calm periods where price gravitates steadily toward the Power Law, interrupted by explosive volatile episodes where deviations can grow before eventually reverting.</p>
-
-              <p style={{ margin: "0 0 12px" }}><strong style={{ color: "#37352F" }}>Step 4 — Monte Carlo path generation.</strong> Each of the 500 simulated paths is built through five simultaneous mechanisms: (a) A 10-level multiplicative cascade generates fractal trading time, creating realistic volatility clustering — this is the MMAR's core contribution, compressing and stretching time so that some simulated days are calm and others explosive. (b) Daily shocks are drawn from the actual empirical distribution of residual returns (not from a Gaussian), preserving the real fat tails, skewness, and kurtosis. (c) Consecutive shocks are correlated based on the Hurst exponent to reproduce momentum (H > 0.5) or reversals (H &lt; 0.5). (d) At each time step, the market regime (calm or volatile) switches stochastically according to the Markov transition matrix, determining the active κ and volatility scale for that day. (e) The path is anchored to the Power Law trajectory via the regime-specific OU mean-reversion. The result is paths where calm consolidation and explosive moves alternate realistically, rather than having a constant mean-reversion speed throughout.</p>
-
-              <p style={{ margin: "0 0 12px" }}><strong style={{ color: "#37352F" }}>Step 5 — Loss probability estimation.</strong> Rather than computing probabilities from a theoretical distribution (which would use a Gaussian approximation and systematically underestimate tail risk), we interpolate directly between the empirical percentiles (P5, P25, P50, P75, P95) of the simulated paths at each time horizon. The percentage of paths below a given price level is taken as the probability estimate.</p>
-
-              <p style={{ margin: "0 0 12px", fontWeight: 500, color: "#37352F" }}>What makes this approach non-standard:</p>
-
-              <p style={{ margin: "0 0 0" }}>Most Bitcoin analysis tools use either the Power Law alone (giving deterministic projections with no uncertainty quantification) or standard Monte Carlo with Gaussian noise (which underestimates crash probability by orders of magnitude). This dashboard bridges both: Power Law for structural direction, MMAR for realistic fractal noise, and regime-switching OU for trajectory anchoring with different mean-reversion dynamics in calm vs volatile markets. Additionally, the Power Law regression uses Weighted Least Squares instead of ordinary least squares, giving appropriate weight to recent liquid-market data over early thin-market prices. The Hurst exponent is estimated via DFA rather than the classical R/S method. The use of empirical shock resampling instead of parametric noise generation means every simulated shock actually occurred in Bitcoin's real history, preserving the exact distributional shape without modelling assumptions.</p>
+              <p style={{ margin: "0 0 12px", fontWeight: 500, color: "#37352F" }}>Five steps, each building on the previous:</p>
+              <p style={{ margin: "0 0 12px" }}><strong style={{ color: "#37352F" }}>Step 1 — Power Law fit.</strong> We fit the price-vs-time curve using Weighted Least Squares (recent liquid-market data weighs more than early thin-market data). Separately, a RANSAC robust fit runs 200 iterations to find the support floor, automatically excluding bubble peaks.</p>
+              <p style={{ margin: "0 0 12px" }}><strong style={{ color: "#37352F" }}>Step 2 — Fractal calibration.</strong> Using the last ~4 years of data (a rolling window), we measure trend persistence (Hurst exponent) and volatility clustering (intermittency). These adapt automatically as new data arrives.</p>
+              <p style={{ margin: "0 0 12px" }}><strong style={{ color: "#37352F" }}>Step 3 — Regime detection.</strong> The market is classified into calm and volatile regimes, each with its own mean-reversion speed. Calm markets correct toward fair value faster; volatile markets let deviations persist longer.</p>
+              <p style={{ margin: "0 0 12px" }}><strong style={{ color: "#37352F" }}>Step 4 — Monte Carlo simulation.</strong> 500 paths are generated using fractal volatility clustering, shocks from Bitcoin's actual historical returns (not a bell curve), Hurst-correlated momentum, regime-switching, and a reflecting barrier at the support floor.</p>
+              <p style={{ margin: "0 0 0" }}><strong style={{ color: "#37352F" }}>Step 5 — Scoring.</strong> Seven signals are combined: valuation (including distance to support), risk/reward, loss probability, episode timing, market regime, volatility conditions, and trend persistence. The result is YES (Strong Buy or Buy) or NO (Hold, Wait, or Sell). Everything refits on every page load.</p>
             </div>
           </Toggle>
           <Divider />
 
-          <Toggle label="What is a Monte Carlo simulation and how is it used here?" open={openSections.faq_mc} onToggle={() => toggleSection("faq_mc")}>
+          <Toggle label="What is Monte Carlo and how is it used here?" open={openSections.faq_mc} onToggle={() => toggleSection("faq_mc")}>
             <div style={{ fontSize: 14, color: "#4F4F4F", lineHeight: 1.8 }}>
-              <p style={{ margin: "0 0 12px" }}>A Monte Carlo simulation generates many random scenarios to map out the range of possible outcomes. Instead of a single forecast ("Bitcoin will be $150k next year"), it produces a distribution of 500 equally plausible futures, showing what could happen under different volatility and market conditions.</p>
-              <p style={{ margin: "0 0 12px" }}>Each simulated path starts at today's price and evolves day by day for 1 year (or 3 years). The results are summarized as percentiles: P5 (the worst 5% of outcomes), P25, P50 (the median), P75, and P95 (the best 5%). This gives you a complete picture of the probability landscape, not a point estimate.</p>
-              <p style={{ margin: "0 0 0" }}>When this dashboard states a loss probability (for example, "12% chance of being at a loss after 1 year"), that number comes from counting how many of the 500 simulated paths end below your purchase price. It's a direct empirical count, not a calculation from a mathematical formula. This means the fat tails and volatility clustering from the MMAR model flow through to the probability estimates.</p>
+              <p style={{ margin: "0 0 12px" }}>Monte Carlo means running the model 500 times with random variations to see the full range of possible outcomes. Instead of one price target, you get a distribution: "In 95% of simulations, BTC ended above $X after 1 year."</p>
+              <p style={{ margin: "0 0 12px" }}>What makes this different: the randomness comes from Bitcoin's actual historical returns, not a bell curve. The shocks are shaped by fractal time (clustering wild days together), correlated by the Hurst exponent (making trends persist), and anchored to the Power Law via regime-switching mean-reversion.</p>
+              <p style={{ margin: "0 0 0" }}>No simulated path can breach the RANSAC support floor — the historically verified minimum. The worst-case scenarios are grounded in what has actually happened, not theoretical extremes.</p>
             </div>
           </Toggle>
           <Divider />
 
-          <Toggle label="How does the composite buy/sell signal work?" open={openSections.faq_signal} onToggle={() => toggleSection("faq_signal")}>
+          <Toggle label="How does the buy/sell signal work?" open={openSections.faq_signal} onToggle={() => toggleSection("faq_signal")}>
             <div style={{ fontSize: 14, color: "#4F4F4F", lineHeight: 1.8 }}>
-              <p style={{ margin: "0 0 12px" }}>The YES / CAUTIOUSLY / NOT NOW verdict is produced by a composite scoring system that weighs seven independent signals: Power Law valuation (25% — blends distance to fair value with proximity to RANSAC support), Risk/Reward asymmetry (20% — blends Monte Carlo and Power Law R/R ratios), 1-year loss probability (15% — blends MC loss probability with structural downside to support), Time to Fair Value (15% — shorter reversion time when below FV is bullish), current market regime (12%), market temperature (8%), and Hurst trend persistence (5%). Each signal contributes a score between −1 (strongly bearish) and +1 (strongly bullish). The first three signals combine stochastic (MC) and structural (PL) information for more robust scoring.</p>
-              <p style={{ margin: "0 0 12px" }}>The weighted sum produces a composite score from −1 to +1. Scores above +0.5 produce "YES" with high confidence, +0.2 to +0.5 produce "YES" with moderate confidence, −0.1 to +0.2 produce "CAUTIOUSLY", and below −0.1 produce "NOT NOW". The "What's driving this" section shows each signal's contribution visually so you can see which factors agree and which conflict.</p>
-              <p style={{ margin: "0 0 0" }}>The signal assumes a minimum 1-year holding period. It is not designed for short-term trading. The longer your intended holding period, the more reliable the signal becomes, because the Power Law's structural gravity has more time to assert itself.</p>
+              <p style={{ margin: "0 0 12px" }}>Seven weighted signals, each scoring −1 (bearish) to +1 (bullish):</p>
+              <p style={{ margin: "0 0 12px" }}><strong>Valuation (25%)</strong> — Distance to fair value + proximity to support floor. <strong>Risk/Reward (20%)</strong> — Blends Monte Carlo and Power Law upside vs downside. <strong>Loss probability (15%)</strong> — MC loss chance + structural downside to support. <strong>Episode timing (15%)</strong> — How far through the current deviation episode, direction of change, and depth. <strong>Market regime (12%)</strong> — Bull, bear, accumulation, recovery, or ranging. <strong>Temperature (8%)</strong> and <strong>Trend (5%)</strong> — Volatility environment and Hurst persistence.</p>
+              <p style={{ margin: "0 0 0" }}>The composite maps to: <strong>Strong Buy</strong> and <strong>Buy</strong> (shown as YES), or <strong>Hold</strong>, <strong>Wait</strong>, and <strong>Sell</strong> (shown as NO). The "What's driving this" section shows each signal's contribution.</p>
             </div>
           </Toggle>
           <Divider />
 
-          <Toggle label="Where does the data come from and how fresh is it?" open={openSections.faq_data} onToggle={() => toggleSection("faq_data")}>
+          <Toggle label="Where does the data come from?" open={openSections.faq_data} onToggle={() => toggleSection("faq_data")}>
             <div style={{ fontSize: 14, color: "#4F4F4F", lineHeight: 1.8 }}>
-              <p style={{ margin: "0 0 12px" }}>The dataset combines two sources. Daily closing prices from April 2013 to March 2026 (~4,700 data points from CoinGecko) are embedded directly in the application — no external API needed. Monthly prices from July 2010 to April 2013 are also hardcoded, covering the pre-exchange era. From the last hardcoded date to today, daily prices are fetched from the Binance API (one lightweight call), and the live spot price refreshes every 60 seconds via Binance or Kraken.</p>
-              <p style={{ margin: "0 0 0" }}>Every calculation — the Weighted Least Squares Power Law regression, Hurst exponent via Detrended Fluctuation Analysis, multifractal partition function, Ornstein-Uhlenbeck calibration, and all 1,000 Monte Carlo path simulations (500 paths for 1 year, 500 for 3 years) — runs entirely in your browser using JavaScript. Nothing is pre-computed or stored on a server. The model recalibrates on every page load using the full dataset plus the latest available prices.</p>
+              <p style={{ margin: "0 0 12px" }}>Three layers: monthly prices from 2010–2013 (~33 points from early records), daily prices from April 2013 to the last update (~4,700 points from CoinGecko), and live daily prices from there to today (Binance). Spot price refreshes every 60 seconds.</p>
+              <p style={{ margin: "0 0 0" }}>Everything recalculates on every page load — Power Law, RANSAC support, fractal parameters, Monte Carlo, episode analysis, composite score. Nothing is cached. The model reflects the data available at the moment you loaded the page.</p>
             </div>
           </Toggle>
           <Divider />
 
-          <Toggle label="How accurate is this model? Has it been backtested?" open={openSections.faq_accuracy} onToggle={() => toggleSection("faq_accuracy")}>
+          <Toggle label="How accurate is this?" open={openSections.faq_accuracy} onToggle={() => toggleSection("faq_accuracy")}>
             <div style={{ fontSize: 14, color: "#4F4F4F", lineHeight: 1.8 }}>
-              <p style={{ margin: "0 0 12px" }}>The Power Law regression has an R² above 0.91 over 16 years of data, which is exceptionally high for any financial model. The band framework combines statistical σ-bands (±0.5σ, ±1σ, +2σ) with a RANSAC-derived support floor that has correctly contained every major cycle bottom since 2013. The +2σ ceiling has correctly identified every major cycle top. However, past statistical consistency does not guarantee future performance.</p>
-              <p style={{ margin: "0 0 12px" }}>The MMAR fractal parameters (H and λ²) are calibrated on a rolling 4-year window of recent data, which means they always reflect the current market microstructure and adapt as new data arrives. The Monte Carlo simulations use 500 paths per horizon, providing stable estimates across all percentiles including the tails (P5, P95).</p>
-              <p style={{ margin: "0 0 0" }}>The composite signal has not been formally backtested across full historical cycles because it depends on the Monte Carlo output, which is stochastic by nature (different each run). The individual components — Power Law deviation, Hurst exponent, multifractal spectrum — have been validated against Bitcoin's empirical properties in academic research.</p>
+              <p style={{ margin: "0 0 12px" }}>The Power Law fit has an R² above 0.91 over 16 years. The RANSAC support has contained every cycle bottom since 2013. The bubble zone has identified every cycle top. Past consistency doesn't guarantee the future.</p>
+              <p style={{ margin: "0 0 0" }}>The episode timing analysis is based on 5 completed discount episodes and 7 overheated episodes — a small but consistent sample. The bimodal pattern (short bounces vs long winters) is clear in the data but the boundaries are approximate.</p>
             </div>
           </Toggle>
           <Divider />
 
           <Toggle label="How is this different from technical analysis?" open={openSections.faq_ta} onToggle={() => toggleSection("faq_ta")}>
             <div style={{ fontSize: 14, color: "#4F4F4F", lineHeight: 1.8 }}>
-              <p style={{ margin: "0 0 12px" }}>Technical analysis (TA) looks at price patterns, support/resistance lines, moving averages, and chart formations to predict short-term movements. It works — not because the patterns have inherent predictive power, but because enough market participants believe in them and act on them, creating self-fulfilling prophecies. When millions of traders draw the same trendline and set buy orders at the same level, the level holds. That's real, and it moves money.</p>
-              <p style={{ margin: "0 0 12px" }}>This dashboard does something fundamentally different. It doesn't look at chart patterns or trading signals. It fits a mathematical growth model (Power Law) to Bitcoin's entire 15-year history, calibrates the statistical properties of how price deviates from that model (using fractal mathematics from Mandelbrot), and then simulates 500 possible futures that respect both the long-term trajectory and the realistic short-term chaos. The output isn't "a triangle is forming on the 4-hour chart" — it's "there's a 12% probability of being at a loss after 1 year based on where the price currently sits relative to its structural growth curve."</p>
-              <p style={{ margin: "0 0 12px" }}>TA is useful for timing entries within days or weeks. This model is useful for deciding whether to enter at all, and sizing your position, over months or years. They operate on completely different time horizons and answer different questions. A TA trader might correctly call a 5% pullback next week that this model doesn't see. But this model can tell you whether paying today's price gives you favorable odds over the next 1–3 years, which TA fundamentally cannot.</p>
-              <p style={{ margin: "0 0 0" }}>The ideal approach combines both: use this model to decide if the structural position is favorable, then use TA to fine-tune your entry timing within that larger framework.</p>
+              <p style={{ margin: "0 0 12px" }}>Technical analysis uses patterns in recent price action (moving averages, RSI, support levels) and operates on days to weeks. This model operates on years — a 16-year structural trajectory, 1–3 year Monte Carlo projections, and multi-month deviation episodes.</p>
+              <p style={{ margin: "0 0 0" }}>The question isn't "will Bitcoin go up tomorrow?" but "if I buy today and hold for a year, what are the probabilities?" They're complementary: use this for structural positioning, technical analysis for tactical timing.</p>
             </div>
           </Toggle>
           <Divider />
 
           <Toggle label="How should this NOT be interpreted?" open={openSections.faq_notwhat} onToggle={() => toggleSection("faq_notwhat")}>
             <div style={{ fontSize: 14, color: "#4F4F4F", lineHeight: 1.8 }}>
-              <p style={{ margin: "0 0 12px" }}><strong style={{ color: "#37352F" }}>This is not a price prediction.</strong> The model doesn't say "Bitcoin will be $150k in a year." It says "the structural model's fair value in a year is $X, and simulations show a range of $Y to $Z with a median of $W." The difference matters. A prediction is a single number you can be right or wrong about. A distribution is a map of probabilities.</p>
-              <p style={{ margin: "0 0 12px" }}><strong style={{ color: "#37352F" }}>This is not a trading signal.</strong> The YES/NO verdict assumes a minimum 1-year holding period. If you're buying today to sell next week, this tool has nothing useful to tell you. The Power Law and Monte Carlo operate on structural time scales, not market microstructure.</p>
-              <p style={{ margin: "0 0 12px" }}><strong style={{ color: "#37352F" }}>This is not a guarantee of anything.</strong> An R² of 0.93 is impressive, but it means 7% of the variance is unexplained. The 500 simulated paths are plausible futures, not the set of all possible futures. A black swan event — a major exchange collapse, a protocol vulnerability, a coordinated regulatory ban — lives outside the model's universe. The model can only see what has historically happened, not what has never happened before.</p>
-              <p style={{ margin: "0 0 12px" }}><strong style={{ color: "#37352F" }}>The loss probabilities are estimates, not actuarial certitudes.</strong> "12% probability of loss after 1 year" means 60 out of 500 simulated paths ended below your price. It does not mean there's exactly a 12% chance in reality. The simulations are only as good as the model that generates them.</p>
-              <p style={{ margin: "0 0 0" }}><strong style={{ color: "#37352F" }}>Do not invest money you cannot afford to lose.</strong> Even in the model's most favorable readings — deep value, all signals green, 3% probability of loss — there exists a non-zero chance of catastrophic loss. Bitcoin remains a volatile, non-sovereign, uninsured asset. This dashboard gives you the best quantitative framework we can build, but the final decision and its consequences are yours alone.</p>
+              <p style={{ margin: "0 0 12px" }}><strong style={{ color: "#37352F" }}>Not a price prediction.</strong> The model gives probabilities, not a single number. "Fair value in a year is $148k" means the trajectory points there — not that it will arrive.</p>
+              <p style={{ margin: "0 0 12px" }}><strong style={{ color: "#37352F" }}>Not a trading signal.</strong> The YES/NO assumes you hold for at least 1 year. For day-trading, this tool is useless.</p>
+              <p style={{ margin: "0 0 12px" }}><strong style={{ color: "#37352F" }}>Not a guarantee.</strong> 500 simulations show plausible futures, not all possible futures. A black swan lives outside the model.</p>
+              <p style={{ margin: "0 0 0" }}><strong style={{ color: "#37352F" }}>Don't invest money you can't lose.</strong> Even at "Strong Buy" with all signals green, catastrophic loss is possible. Bitcoin is volatile, non-sovereign, and uninsured.</p>
             </div>
           </Toggle>
           <Divider />
 
-          <Toggle label="Who built this and why?" open={openSections.faq_who} onToggle={() => toggleSection("faq_who")}>
+          <Toggle label="Who built this?" open={openSections.faq_who} onToggle={() => toggleSection("faq_who")}>
             <div style={{ fontSize: 14, color: "#4F4F4F", lineHeight: 1.8 }}>
-              <p style={{ margin: "0 0 12px" }}>This dashboard was built by <a href="https://www.linkedin.com/in/eduforte/" target="_blank" rel="noopener noreferrer" style={{ color: "#37352F", fontWeight: 600 }}>Edu Forte</a> and <a href="https://www.commonsense.finance/" target="_blank" rel="noopener noreferrer" style={{ color: "#37352F", fontWeight: 600 }}>CommonSense</a>, a digital asset manager based in Barcelona. The original motivation was to create a rigorous, quantitative framework for Bitcoin valuation that goes beyond simple Power Law charts — incorporating the fractal properties of Bitcoin's volatility (via Mandelbrot's MMAR) and providing honest probabilistic outcomes (via anchored Monte Carlo simulations).</p>
-              <p style={{ margin: "0 0 0" }}>The underlying research draws on Giovanni Santostasi's Power Law work, Harold Christopher Burger's corridor-of-growth analysis, Benoît Mandelbrot's fractal market theory (particularly the MMAR as described in "The Misbehavior of Markets"), and the Ornstein-Uhlenbeck process from quantitative finance. The specific combination — WLS Power Law, MMAR fractal noise, regime-switching OU, DFA-based Hurst estimation, and empirical shock resampling — is an original approach developed for this tool. You can compare our calibration against Burger's original OLS parameters in the Model Parameters section.</p>
+              <p style={{ margin: "0 0 0" }}>Built by <a href="https://www.linkedin.com/in/eduforte/" target="_blank" rel="noopener noreferrer" style={{ color: "#37352F", fontWeight: 600 }}>Edu Forte</a> and <a href="https://www.commonsense.finance/" target="_blank" rel="noopener noreferrer" style={{ color: "#37352F", fontWeight: 600 }}>CommonSense</a>, a digital asset manager based in Barcelona. The approach combines Santostasi/Burger's Power Law, Mandelbrot's MMAR, regime-switching Ornstein-Uhlenbeck, DFA-based Hurst estimation, RANSAC robust support, and empirical shock resampling — an original combination developed for this tool.</p>
             </div>
           </Toggle>
           <Divider />
 
-          <Toggle label="What are the limitations of this analysis?" open={openSections.faq_limits} onToggle={() => toggleSection("faq_limits")}>
+          <Toggle label="What are the limitations?" open={openSections.faq_limits} onToggle={() => toggleSection("faq_limits")}>
             <div style={{ fontSize: 14, color: "#4F4F4F", lineHeight: 1.8 }}>
-              <p style={{ margin: "0 0 12px" }}>The Bitcoin Power Law is an empirical observation, not a physical law. It has held for 16 years but could break if Bitcoin's fundamental adoption dynamics change — through regulatory prohibition, protocol failure, or displacement by a competing technology. The model has no mechanism to anticipate these structural breaks.</p>
-              <p style={{ margin: "0 0 12px" }}>The Monte Carlo simulations use 500 paths per horizon, which provides stable percentile estimates including tails, though a larger sample would further improve precision. The fractal calibration uses a rolling 4-year window that adapts automatically, though very sudden regime shifts may take time to fully enter the window. The Time to Fair Value estimate blends empirical historical data (4,700+ observations) with MC simulation paths for the current regime.</p>
-              <p style={{ margin: "0 0 0" }}>This is a quantitative model, not financial advice. It provides mathematically grounded analysis of Bitcoin's position relative to its historical growth trajectory and simulated future paths. It cannot predict black swan events, geopolitical shocks, or fundamental shifts in adoption. It should be one input among many in any investment decision. Never invest more than you can afford to lose.</p>
+              <p style={{ margin: "0 0 12px" }}>The Power Law is empirical, not physical. It has held for 16 years but could break if adoption dynamics fundamentally change. The episode analysis uses only 5–7 historical episodes per zone — clear patterns but small samples. The RANSAC support is a historical minimum, not a physical barrier.</p>
+              <p style={{ margin: "0 0 0" }}>This is a quantitative model, not financial advice. It cannot predict black swans, regulatory shifts, or protocol failures. It should be one input among many. Never invest more than you can afford to lose.</p>
             </div>
           </Toggle>
         </div>
