@@ -2070,7 +2070,7 @@ export default function MMARDashboard() {
           lR2up: +(lpl + (resMean + 2 * resStd) / Math.LN10).toFixed(4),
           lR1up: +(lpl + (resMean + resStd) / Math.LN10).toFixed(4),
           lR1dn: +(lpl + (resMean - resStd) / Math.LN10).toFixed(4),
-          lR2dn: +((ransac.a + ransac.b * Math.log(t) + ransac.floor) / Math.LN10).toFixed(4),
+          lR2dn: +(lpl + resFloor / Math.LN10).toFixed(4),
         };
       }).filter(Boolean);
 
@@ -2086,7 +2086,7 @@ export default function MMARDashboard() {
           lR2up: +(lplF + (resMean + 2 * resStd) / Math.LN10).toFixed(4),
           lR1up: +(lplF + (resMean + resStd) / Math.LN10).toFixed(4),
           lR1dn: +(lplF + (resMean - resStd) / Math.LN10).toFixed(4),
-          lR2dn: +((ransac.a + ransac.b * Math.log(tF) + ransac.floor) / Math.LN10).toFixed(4),
+          lR2dn: +(lplF + resFloor / Math.LN10).toFixed(4),
         });
       }
 
