@@ -2523,7 +2523,6 @@ export default function MMARDashboard() {
     // 2. What the model expects (projections + worst case, one paragraph)
     const mcWorst1y = loss1y?.p5 ? ((loss1y.p5 - S0) / S0 * 100) : -50;
     const mcWorst3y = loss3y?.p5 ? ((loss3y.p5 - S0) / S0 * 100) : -30;
-    const supportPrice = Math.exp(Math.log(plToday) + resFloor);
     const maxDownside = ((S0 - supportPrice) / S0 * 100);
     paras.push(`If you buy today and hold 1 year, the model's base case is ${fmtK(pl1yFuture)} (${pl1yReturn >= 0 ? "+" : ""}${pl1yReturn.toFixed(0)}%). The worst case — the lowest Bitcoin has ever gone relative to its trend — puts you at ${fmtK(supportPrice)} (−${maxDownside.toFixed(0)}%). Over 3 years, the target is ${fmtK(pl3yFuture)} (${pl3yReturn >= 0 ? "+" : ""}${pl3yReturn.toFixed(0)}%).${mcWorst3y > 0 ? " Even in the worst 5% of simulations, you're in profit at 3 years." : ""}`);
 
