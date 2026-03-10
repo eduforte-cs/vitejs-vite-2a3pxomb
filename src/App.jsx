@@ -28,42 +28,76 @@ function fitPowerLaw(prices) {
   const logP = pts.map(p => Math.log(p.price));
   const n = pts.length;
 
-  // ── Weighted Least Squares ──
-  // Exponential weights: recent data matters more, early illiquid data matters less
-  // Half-life of ~4 years in log-time units
+  // ── Weighted Least Squares (fair value + σ bands) ──
   const tMax = logT[n - 1];
   const halfLife = Math.log(daysSinceGenesis("2020-01-01")) - Math.log(daysSinceGenesis("2016-01-01")); // ~4yr in log-t space
   const decay = Math.LN2 / halfLife;
   const rawW = logT.map(lt => Math.exp(-decay * (tMax - lt)));
   const wSum = rawW.reduce((s, w) => s + w, 0);
-  const w = rawW.map(wi => wi / wSum); // normalized weights
-
-  // Weighted means
+  const w = rawW.map(wi => wi / wSum);
   const mT = logT.reduce((s, x, i) => s + w[i] * x, 0);
   const mP = logP.reduce((s, y, i) => s + w[i] * y, 0);
-
-  // Weighted slope and intercept
   const b = logT.reduce((s, x, i) => s + w[i] * (x - mT) * (logP[i] - mP), 0) /
             logT.reduce((s, x, i) => s + w[i] * (x - mT) ** 2, 0);
   const a = mP - b * mT;
 
-  // Residuals (unweighted — these represent actual deviations for σ-band purposes)
+  // Residuals from WLS (unweighted — for σ-band purposes)
   const residuals = pts.map(p => Math.log(p.price) - (a + b * Math.log(p.t)));
   const resMean = residuals.reduce((s, r) => s + r, 0) / n;
   const resStd = Math.sqrt(residuals.reduce((s, r) => s + (r - resMean) ** 2, 0) / n);
 
-  // Weighted R² (how well the model fits with the weighting that matters)
+  // Weighted R²
   const ssTot = logP.reduce((s, y, i) => s + w[i] * (y - mP) ** 2, 0);
   const ssRes = logP.reduce((s, y, i) => s + w[i] * (y - (a + b * logT[i])) ** 2, 0);
   const r2 = 1 - ssRes / ssTot;
 
-  // Floor band: Burger-style empirical minimum from liquid markets (post-2013)
-  // Expressed in σ for readability, but the value comes from real data, not a σ multiple
-  const liquidResiduals = pts.filter(p => p.t > daysSinceGenesis("2013-04-01")).map(p => Math.log(p.price) - (a + b * Math.log(p.t)));
-  const resFloor = liquidResiduals.length > 100 ? Math.min(...liquidResiduals) : resMean - 1.5 * resStd;
+  // ── RANSAC (robust support line, Burger-style) ──
+  // Excludes bubble peaks automatically, giving a tighter "normal mode" fit
+  // The support line = RANSAC fit shifted down to its minimum residual
+  let rA = a, rB = b;
+  const ransacThreshold = 0.5; // ln-space; ~65% price deviation = outlier
+  let bestInliers = 0;
+  const seed = 42; // deterministic
+  let rng = seed;
+  const nextRng = () => { rng = (rng * 1664525 + 1013904223) & 0x7fffffff; return rng / 0x7fffffff; };
+  for (let iter = 0; iter < 200; iter++) {
+    const i1 = Math.floor(nextRng() * n);
+    const i2 = Math.floor(nextRng() * n);
+    if (i1 === i2 || Math.abs(logT[i1] - logT[i2]) < 0.01) continue;
+    const bTry = (logP[i2] - logP[i1]) / (logT[i2] - logT[i1]);
+    const aTry = logP[i1] - bTry * logT[i1];
+    if (bTry < 3 || bTry > 8) continue;
+    const inliers = [];
+    for (let j = 0; j < n; j++) {
+      if (Math.abs(logP[j] - (aTry + bTry * logT[j])) < ransacThreshold) inliers.push(j);
+    }
+    if (inliers.length > bestInliers) {
+      bestInliers = inliers.length;
+      const mTi = inliers.reduce((s, j) => s + logT[j], 0) / inliers.length;
+      const mPi = inliers.reduce((s, j) => s + logP[j], 0) / inliers.length;
+      const num = inliers.reduce((s, j) => s + (logT[j] - mTi) * (logP[j] - mPi), 0);
+      const den = inliers.reduce((s, j) => s + (logT[j] - mTi) ** 2, 0);
+      if (den > 0) { rB = num / den; rA = mPi - rB * mTi; }
+    }
+  }
+
+  // RANSAC support: same RANSAC slope, shifted to the minimum residual from liquid markets
+  const liquidStart = daysSinceGenesis("2013-04-01");
+  const ransacResiduals = pts.filter(p => p.t > liquidStart).map(p => Math.log(p.price) - (rA + rB * Math.log(p.t)));
+  const ransacFloor = ransacResiduals.length > 100 ? Math.min(...ransacResiduals) : -0.5;
+  // Support price at time t = exp(rA + rB*ln(t) + ransacFloor)
+  // Express as a WLS residual equivalent for band plotting: what residual from WLS gives the same price?
+  // supportPrice(t) = exp(rA + rB*ln(t) + ransacFloor)
+  // wlsPrice(t) = exp(a + b*ln(t) + resFloor)
+  // We need resFloor such that: a + b*ln(t) + resFloor = rA + rB*ln(t) + ransacFloor
+  // This varies with t, so we evaluate at t_today for the "equivalent residual"
+  const tToday = pts[pts.length - 1].t;
+  const supportPriceToday = Math.exp(rA + rB * Math.log(tToday) + ransacFloor);
+  const wlsPriceToday = Math.exp(a + b * Math.log(tToday));
+  const resFloor = Math.log(supportPriceToday) - Math.log(wlsPriceToday);
   const resFloorSigma = ((resFloor - resMean) / resStd);
 
-  return { a, b, residuals, resMean, resStd, resFloor, resFloorSigma, r2, pts };
+  return { a, b, residuals, resMean, resStd, resFloor, resFloorSigma, r2, pts, ransac: { a: rA, b: rB, floor: ransacFloor } };
 }
 
 function plPrice(a, b, t) { return Math.exp(a + b * Math.log(t)); }
@@ -1934,7 +1968,7 @@ export default function MMARDashboard() {
       setMsg("Fitting Power Law model...");
       await new Promise(r => setTimeout(r, 20));
       const pl = fitPowerLaw(prices);
-      const { a, b, residuals, resMean, resStd, resFloor, resFloorSigma, r2 } = pl;
+      const { a, b, residuals, resMean, resStd, resFloor, resFloorSigma, r2, ransac } = pl;
 
       const lastPrice = prices[prices.length - 1];
       const S0 = lastPrice.price;
@@ -2036,7 +2070,7 @@ export default function MMARDashboard() {
           lR2up: +(lpl + (resMean + 2 * resStd) / Math.LN10).toFixed(4),
           lR1up: +(lpl + (resMean + resStd) / Math.LN10).toFixed(4),
           lR1dn: +(lpl + (resMean - resStd) / Math.LN10).toFixed(4),
-          lR2dn: +(lpl + resFloor / Math.LN10).toFixed(4),
+          lR2dn: +((ransac.a + ransac.b * Math.log(t) + ransac.floor) / Math.LN10).toFixed(4),
         };
       }).filter(Boolean);
 
@@ -2052,7 +2086,7 @@ export default function MMARDashboard() {
           lR2up: +(lplF + (resMean + 2 * resStd) / Math.LN10).toFixed(4),
           lR1up: +(lplF + (resMean + resStd) / Math.LN10).toFixed(4),
           lR1dn: +(lplF + (resMean - resStd) / Math.LN10).toFixed(4),
-          lR2dn: +(lplF + resFloor / Math.LN10).toFixed(4),
+          lR2dn: +((ransac.a + ransac.b * Math.log(tF) + ransac.floor) / Math.LN10).toFixed(4),
         });
       }
 
@@ -2088,7 +2122,7 @@ export default function MMARDashboard() {
       setD({
         H, lambda2, std, mean, skew, kurt, annualVol, S0, t0, n, source, mom,
         isSynthetic: source.includes("Synthetic"),
-        lastDate: lastPrice.date, a, b, r2, resMean, resStd, resFloor, resFloorSigma, plToday, sigmaFromPL,
+        lastDate: lastPrice.date, a, b, r2, resMean, resStd, resFloor, resFloorSigma, ransac, plToday, sigmaFromPL,
         kappa, halfLife, ouRegimes, resReturns, dailyResiduals, currentResidual,
         tauData, plChart, forecastChart, sigmaChart, rollingHurst,
         percentiles, plForecast365, percentiles3y, plForecast3y,
@@ -2131,7 +2165,7 @@ export default function MMARDashboard() {
 
   // ── Destructure ──
   const { H, lambda2, std, annualVol, skew, kurt, S0, t0, source, isSynthetic, lastDate, mom,
-    a, b, r2, resMean, resStd, resFloor, resFloorSigma, plToday, sigmaFromPL, kappa, halfLife, ouRegimes,
+    a, b, r2, resMean, resStd, resFloor, resFloorSigma, ransac, plToday, sigmaFromPL, kappa, halfLife, ouRegimes,
     resReturns, currentResidual,
     tauData, plChart, forecastChart, sigmaChart, rollingHurst,
     percentiles, plForecast365, percentiles3y, plForecast3y,
@@ -3516,6 +3550,8 @@ export default function MMARDashboard() {
                 { label: "κ volatile regime", value: ouRegimes ? fmt(ouRegimes.regimes[1].kappa, 4) : "–", desc: ouRegimes ? `Half-life: ${ouRegimes.halfLifeVol}d · ${100 - ouRegimes.pCalm}% of time` : "" },
                 { label: "Current regime", value: ouRegimes ? (ouRegimes.currentRegime === 0 ? "Calm" : "Volatile") : "–", desc: ouRegimes ? `Vol scale: ${ouRegimes.regimes[ouRegimes.currentRegime].volScale.toFixed(2)}x` : "" },
                 { label: "Residual σ", value: fmt(resStd, 4), desc: "Deviation amplitude" },
+                { label: "RANSAC Slope", value: ransac ? fmt(ransac.b, 3) : "–", desc: "Robust fit (excl. bubbles)" },
+                { label: "Support floor", value: `${resFloorSigma.toFixed(2)}σ`, desc: `RANSAC min: $${fmtK(Math.exp(Math.log(plToday) + resFloor))}` },
                 { label: "Kurtosis", value: fmt(kurt, 2), desc: `Excess: ${fmt(kurt - 3, 2)} (fat tails)` },
                 { label: "Skewness", value: fmt(skew, 3), desc: "Tail asymmetry" },
                 { label: "Annual Volatility", value: `${(annualVol * 100).toFixed(0)}%`, desc: volInfo.desc },
