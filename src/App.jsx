@@ -30,10 +30,9 @@ function fitPowerLaw(prices) {
 
   // ── Weighted Least Squares ──
   // Exponential weights: recent data matters more, early illiquid data matters less
-  // Half-life of ~8 years in log-time units
-  // Balances: recent liquid data > early thin data, but doesn't let one cycle dominate
+  // Half-life of ~4 years in log-time units
   const tMax = logT[n - 1];
-  const halfLife = Math.log(daysSinceGenesis("2020-01-01")) - Math.log(daysSinceGenesis("2012-01-01")); // ~8yr in log-t space
+  const halfLife = Math.log(daysSinceGenesis("2020-01-01")) - Math.log(daysSinceGenesis("2016-01-01")); // ~4yr in log-t space
   const decay = Math.LN2 / halfLife;
   const rawW = logT.map(lt => Math.exp(-decay * (tMax - lt)));
   const wSum = rawW.reduce((s, w) => s + w, 0);
@@ -1710,11 +1709,11 @@ function normCDF(z) {
 // PLAIN LANGUAGE HELPERS (for investors)
 // ══════════════════════════════════════════════════════
 function getVerdictPlain(sig) {
-  if (sig > 1.8) return { emoji: "🔴", label: "Overheated", desc: "Bitcoin is near its historical cycle top zone (P95). Corrections have always followed from here.", color: "#EB5757" };
+  if (sig > 1.8) return { emoji: "🔴", label: "Overheated", desc: "Bitcoin is trading well above its long-term trend. Historically, these levels precede corrections.", color: "#EB5757" };
   if (sig > 1.0) return { emoji: "🟡", label: "Above trend", desc: "Price is above fair value and entering the overheated zone. Consider taking some profits.", color: "#E8A838" };
   if (sig > -0.5) return { emoji: "🟢", label: "Fair value", desc: "Bitcoin is trading near its structural equilibrium. A neutral position is reasonable.", color: "#27AE60" };
   if (sig > -1.35) return { emoji: "🔵", label: "Undervalued", desc: "Price is below the long-term trend. Historically a good zone to accumulate.", color: "#2F80ED" };
-  return { emoji: "💎", label: "Deep value", desc: "Bitcoin is at or below its historical support (P5). These levels have always preceded major rallies.", color: "#6FCF97" };
+  return { emoji: "💎", label: "Deep value", desc: "Bitcoin is at historically low valuations relative to its growth trajectory. Strong buy signal.", color: "#6FCF97" };
 }
 
 function getVolLabel(annVol) {
@@ -1806,9 +1805,8 @@ function ProgressBar({ value, max = 100, color = "#2F80ED", height = 6 }) {
 }
 
 function DeviationGauge({ sigma, style: outerStyle }) {
-  // Asymmetric: -1.5 (empirical P5 floor) to +2.0 (beyond P95)
-  const clamped = Math.max(-1.5, Math.min(2.0, sigma));
-  const pct = ((clamped + 1.5) / 3.5) * 100;
+  const clamped = Math.max(-2, Math.min(2, sigma));
+  const pct = ((clamped + 2) / 4) * 100;
   const zones = [
     { color: "#6FCF97" },
     { color: "#2F80ED" },
@@ -1837,7 +1835,7 @@ function DeviationGauge({ sigma, style: outerStyle }) {
         }} />
       </div>
       <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4 }}>
-        {[-1.5, -0.75, 0, 1.0, 2.0].map(s => (
+        {[-2, -1, 0, 1, 2].map(s => (
           <span key={s} style={{ fontSize: 9, color: "#BFBFBA", fontFamily: "monospace" }}>{s > 0 ? "+" : ""}{s}σ</span>
         ))}
       </div>
@@ -1931,18 +1929,6 @@ export default function MMARDashboard() {
       await new Promise(r => setTimeout(r, 20));
       const pl = fitPowerLaw(prices);
       const { a, b, residuals, resMean, resStd, r2 } = pl;
-
-      // Empirical percentile bands (asymmetric — replace symmetric ±2σ)
-      const sortedRes = [...residuals].sort((a, b) => a - b);
-      const empP = p => sortedRes[Math.floor(sortedRes.length * p / 100)];
-      const empBands = {
-        floor: empP(1),      // P1: historical floor (~-1.89σ)
-        deepValue: empP(5),  // P5: deep value zone (~-1.50σ)
-        support: empP(10),   // P10: support (~-1.34σ, close to -1σ)
-        overheated: empP(90),// P90: overheated (~+1.35σ, close to +1σ)
-        cycleTop: empP(95),  // P95: cycle top (~+1.79σ)
-        bubble: empP(99),    // P99: bubble ceiling (~+3.13σ)
-      };
 
       const lastPrice = prices[prices.length - 1];
       const S0 = lastPrice.price;
@@ -2041,10 +2027,10 @@ export default function MMARDashboard() {
         return {
           date: p.date, logT: +Math.log10(t).toFixed(4), price: +p.price.toFixed(2), pl: +plV.toFixed(2),
           lPrice: +lprice.toFixed(4), lPl: +lpl.toFixed(4),
-          lR2up: +(lpl + empBands.cycleTop / Math.LN10).toFixed(4),
-          lR1up: +(lpl + empBands.overheated / Math.LN10).toFixed(4),
-          lR1dn: +(lpl + empBands.support / Math.LN10).toFixed(4),
-          lR2dn: +(lpl + empBands.deepValue / Math.LN10).toFixed(4),
+          lR2up: +(lpl + (resMean + 2 * resStd) / Math.LN10).toFixed(4),
+          lR1up: +(lpl + (resMean + resStd) / Math.LN10).toFixed(4),
+          lR1dn: +(lpl + (resMean - resStd) / Math.LN10).toFixed(4),
+          lR2dn: +(lpl + (resMean - 2 * resStd) / Math.LN10).toFixed(4),
         };
       }).filter(Boolean);
 
@@ -2057,10 +2043,10 @@ export default function MMARDashboard() {
         const lplF = Math.log10(plF);
         forecastChart.push({
           date: fd.toISOString().slice(0, 7), logT: +Math.log10(tF).toFixed(4), lPl: +lplF.toFixed(4), lPrice: null,
-          lR2up: +(lplF + empBands.cycleTop / Math.LN10).toFixed(4),
-          lR1up: +(lplF + empBands.overheated / Math.LN10).toFixed(4),
-          lR1dn: +(lplF + empBands.support / Math.LN10).toFixed(4),
-          lR2dn: +(lplF + empBands.deepValue / Math.LN10).toFixed(4),
+          lR2up: +(lplF + (resMean + 2 * resStd) / Math.LN10).toFixed(4),
+          lR1up: +(lplF + (resMean + resStd) / Math.LN10).toFixed(4),
+          lR1dn: +(lplF + (resMean - resStd) / Math.LN10).toFixed(4),
+          lR2dn: +(lplF + (resMean - 2 * resStd) / Math.LN10).toFixed(4),
         });
       }
 
@@ -2096,7 +2082,7 @@ export default function MMARDashboard() {
       setD({
         H, lambda2, std, mean, skew, kurt, annualVol, S0, t0, n, source, mom,
         isSynthetic: source.includes("Synthetic"),
-        lastDate: lastPrice.date, a, b, r2, resMean, resStd, empBands, plToday, sigmaFromPL,
+        lastDate: lastPrice.date, a, b, r2, resMean, resStd, plToday, sigmaFromPL,
         kappa, halfLife, ouRegimes, resReturns, dailyResiduals, currentResidual,
         tauData, plChart, forecastChart, sigmaChart, rollingHurst,
         percentiles, plForecast365, percentiles3y, plForecast3y,
@@ -2139,7 +2125,7 @@ export default function MMARDashboard() {
 
   // ── Destructure ──
   const { H, lambda2, std, annualVol, skew, kurt, S0, t0, source, isSynthetic, lastDate, mom,
-    a, b, r2, resMean, resStd, empBands, plToday, sigmaFromPL, kappa, halfLife, ouRegimes,
+    a, b, r2, resMean, resStd, plToday, sigmaFromPL, kappa, halfLife, ouRegimes,
     resReturns, currentResidual,
     tauData, plChart, forecastChart, sigmaChart, rollingHurst,
     percentiles, plForecast365, percentiles3y, plForecast3y,
@@ -2164,11 +2150,11 @@ export default function MMARDashboard() {
   const pl1yFuture = plPrice(a, b, t0 + 365);
   const pl1yReturn = ((pl1yFuture - S0) / S0 * 100);
   const pl1yBands = {
-    p2up: Math.exp(Math.log(pl1yFuture) + empBands.cycleTop),
-    p1up: Math.exp(Math.log(pl1yFuture) + empBands.overheated),
+    p2up: Math.exp(Math.log(pl1yFuture) + resMean + 2 * resStd),
+    p1up: Math.exp(Math.log(pl1yFuture) + resMean + resStd),
     fair: pl1yFuture,
-    p1dn: Math.exp(Math.log(pl1yFuture) + empBands.support),
-    p2dn: Math.exp(Math.log(pl1yFuture) + empBands.deepValue),
+    p1dn: Math.exp(Math.log(pl1yFuture) + resMean - resStd),
+    p2dn: Math.exp(Math.log(pl1yFuture) + resMean - 2 * resStd),
   };
   const plUpside1y = ((pl1yBands.p1up - S0) / S0 * 100);
   const plDownside1y = ((S0 - pl1yBands.p1dn) / S0 * 100);
@@ -2222,17 +2208,17 @@ export default function MMARDashboard() {
   ].map(h => {
     const plF = plPrice(a, b, t0 + h.days);
     const implRet = ((plF - S0) / S0 * 100);
-    const p2up = Math.exp(Math.log(plF) + empBands.cycleTop);
-    const p1up = Math.exp(Math.log(plF) + empBands.overheated);
-    const p1dn = Math.exp(Math.log(plF) + empBands.support);
-    const p2dn = Math.exp(Math.log(plF) + empBands.deepValue);
+    const p2up = Math.exp(Math.log(plF) + resMean + 2 * resStd);
+    const p1up = Math.exp(Math.log(plF) + resMean + resStd);
+    const p1dn = Math.exp(Math.log(plF) + resMean - resStd);
+    const p2dn = Math.exp(Math.log(plF) + resMean - 2 * resStd);
     return { ...h, plF, implRet, p2up, p1up, p1dn, p2dn };
   });
 
   // Market temperature: composite of sigma + vol + momentum
   function getMarketTemp(sig, annVol, mom) {
     let score = 0;
-    score += Math.abs(sig) > 1.8 ? 3 : Math.abs(sig) > 1.35 ? 2 : Math.abs(sig) > 0.5 ? 1 : 0;
+    score += Math.abs(sig) > 1.8 ? 3 : Math.abs(sig) > 1.0 ? 2 : Math.abs(sig) > 0.5 ? 1 : 0;
     score += annVol > 1.2 ? 3 : annVol > 0.8 ? 2 : annVol > 0.45 ? 1 : 0;
     score += Math.abs(mom) > 0.1 ? 2 : Math.abs(mom) > 0.05 ? 1 : 0;
     if (score <= 1) return { emoji: "🧊", label: "Calm", color: "#2F80ED", desc: "Low activity, stable conditions" };
@@ -2245,10 +2231,10 @@ export default function MMARDashboard() {
   // Scenarios (must be computed before verdict)
   const sig = sigmaFromPL;
   let s1;
-  if (sig < -1.35) s1 = [0.07, 0.27, 0.13, 0.48, 0.05];
+  if (sig < -1.5) s1 = [0.07, 0.27, 0.13, 0.48, 0.05];
   else if (sig < -0.5) s1 = [0.13, 0.20, 0.20, 0.40, 0.07];
   else if (sig < 0.3) s1 = [0.20, 0.18, 0.32, 0.20, 0.10];
-  else if (sig < 1.35) s1 = [0.30, 0.17, 0.18, 0.10, 0.25];
+  else if (sig < 1.2) s1 = [0.30, 0.17, 0.18, 0.10, 0.25];
   else s1 = [0.45, 0.20, 0.10, 0.05, 0.20];
   { const t = s1.reduce((a, b) => a + b, 0); s1 = s1.map(v => v / t); }
 
@@ -2279,10 +2265,10 @@ export default function MMARDashboard() {
 
   // Regime detection
   const momDir = mom > 0.05 ? "Persistent" : mom < -0.05 ? "Reversing" : "Neutral";
-  const bullConds = [sig > 0.5, sig > 1.35, mom > 0.08, mom > 0.12, H > 0.58, H > 0.65, annualVol >= 0.45].filter(Boolean).length;
-  const bearConds = [sig < -0.8, sig < -1.35, mom < -0.06, mom < -0.10, H > 0.60, annualVol >= 0.80, halfLife > 120].filter(Boolean).length;
+  const bullConds = [sig > 0.5, sig > 1.0, mom > 0.08, mom > 0.12, H > 0.58, H > 0.65, annualVol >= 0.45].filter(Boolean).length;
+  const bearConds = [sig < -0.8, sig < -1.2, mom < -0.06, mom < -0.10, H > 0.60, annualVol >= 0.80, halfLife > 120].filter(Boolean).length;
   const rangeConds = [Math.abs(sig) < 0.4, Math.abs(sig) < 0.2, Math.abs(mom) < 0.05, Math.abs(mom) < 0.03, H < 0.58, lambda2 < 0.12, annualVol < 0.45].filter(Boolean).length;
-  const accumConds = [sig < -1.0, sig < -1.35, mom > -0.04, H < 0.62, annualVol < 0.80, halfLife < 200, lambda2 < 0.20].filter(Boolean).length;
+  const accumConds = [sig < -1.0, sig < -1.5, mom > -0.04, H < 0.62, annualVol < 0.80, halfLife < 200, lambda2 < 0.20].filter(Boolean).length;
   const recovConds = [sig < 0.2, mom > 0.04, mom > 0.08, H > 0.55, annualVol < 0.80, sig > -1.0, halfLife < 180].filter(Boolean).length;
   const regimes = [
     { id: "bear", emoji: "🐻", label: "Bear Market", score: bearConds, color: "#EB5757", desc: "Sustained downward pressure" },
@@ -2306,7 +2292,7 @@ export default function MMARDashboard() {
 
     // ── Signal scoring: each signal contributes [-1, +1] ──
     // 1. PL Deviation (weight: 25%) — where we are vs fair value
-    const sigScore = sig > 1.8 ? -1 : sig > 1.35 ? -0.7 : sig > 0.5 ? -0.2 : sig > -0.5 ? 0.3 : sig > -1.0 ? 0.6 : sig > -1.35 ? 0.8 : 1.0;
+    const sigScore = sig > 1.8 ? -1 : sig > 1.0 ? -0.6 : sig > 0.5 ? -0.2 : sig > -0.5 ? 0.3 : sig > -1.0 ? 0.6 : sig > -1.5 ? 0.8 : 1.0;
 
     // 2. MC Risk/Reward (weight: 20%) — asymmetry from simulations
     const rrScore = udRatio >= 5 ? 1 : udRatio >= 3 ? 0.7 : udRatio >= 2 ? 0.4 : udRatio >= 1.5 ? 0.2 : udRatio >= 1 ? 0 : -0.5;
@@ -2360,7 +2346,7 @@ export default function MMARDashboard() {
 
     // Signal breakdown for transparency
     const signals = [
-      { name: "Valuation (PL)", score: sigScore, weight: 25, detail: sig > 1.35 ? `${Math.abs(deviationPct).toFixed(0)}% above FV (overheated)` : sig > 0.5 ? `${Math.abs(deviationPct).toFixed(0)}% above fair value` : sig > -0.5 ? "Near fair value" : sig > -1.35 ? `${Math.abs(deviationPct).toFixed(0)}% below fair value` : `${Math.abs(deviationPct).toFixed(0)}% below FV (deep value)` },
+      { name: "Valuation (PL)", score: sigScore, weight: 25, detail: sig > 0.5 ? `${Math.abs(deviationPct).toFixed(0)}% above fair value` : sig > -0.5 ? "Near fair value" : `${Math.abs(deviationPct).toFixed(0)}% below fair value` },
       { name: "Risk/Reward (MC)", score: rrScore, weight: 20, detail: udRatio >= 99 ? "All scenarios profitable" : `${udRatio.toFixed(1)}x upside vs downside` },
       { name: "Loss prob. 1Y (MC)", score: lossScore, weight: 15, detail: `${l1y.toFixed(0)}% chance of loss` },
       { name: "30-day outlook", score: outlookScore, weight: 15, detail: `${bullProb30d}% bullish, ${bearProb30d}% bearish` },
@@ -2373,9 +2359,9 @@ export default function MMARDashboard() {
     const paras = [];
 
     // Situation + valuation
-    if (sig > 1.35) {
+    if (sig > 1.8) {
       paras.push(`Bitcoin at ${fmtK(S0)} is ${Math.abs(deviationPct).toFixed(0)}% above its long-term fair value of ${fmtK(plToday)}. Historically, when it gets this stretched, corrections follow.`);
-    } else if (sig > 0.5) {
+    } else if (sig > 0.8) {
       paras.push(`Bitcoin at ${fmtK(S0)} is running about ${Math.abs(deviationPct).toFixed(0)}% above fair value (${fmtK(plToday)}). Not in bubble territory yet, but you're paying a premium.`);
     } else if (sig > -0.5) {
       paras.push(`Bitcoin at ${fmtK(S0)} is ${Math.abs(deviationPct).toFixed(0)}% ${deviationPct >= 0 ? "above" : "below"} the model's fair value of ${fmtK(plToday)}. That's right in the normal range — a fair price.`);
@@ -2389,7 +2375,7 @@ export default function MMARDashboard() {
     // Worst case
     const mcWorst1y = loss1y?.p5 ? ((loss1y.p5 - S0) / S0 * 100) : -50;
     const mcWorst3y = loss3y?.p5 ? ((loss3y.p5 - S0) / S0 * 100) : -30;
-    paras.push(`Worst case: the PL's historical floor (P5) in 1 year is ${fmtK(pl1yBands.p2dn)} (${plWorstReturn1y >= 0 ? "+" : ""}${plWorstReturn1y.toFixed(0)}%). The MC bottom 5% of paths: ${fmtK(loss1y?.p5 || S0 * 0.5)} (${mcWorst1y.toFixed(0)}%) in 1 year, ${fmtK(loss3y?.p5 || S0 * 0.5)} (${mcWorst3y >= 0 ? "+" : ""}${mcWorst3y.toFixed(0)}%) in 3 years.${mcWorst3y > 0 ? " Even the worst-case simulation is in profit at 3 years." : ""}`);
+    paras.push(`Worst case: the PL's −2σ floor in 1 year is ${fmtK(pl1yBands.p2dn)} (${plWorstReturn1y >= 0 ? "+" : ""}${plWorstReturn1y.toFixed(0)}%). The MC bottom 5% of paths: ${fmtK(loss1y?.p5 || S0 * 0.5)} (${mcWorst1y.toFixed(0)}%) in 1 year, ${fmtK(loss3y?.p5 || S0 * 0.5)} (${mcWorst3y >= 0 ? "+" : ""}${mcWorst3y.toFixed(0)}%) in 3 years.${mcWorst3y > 0 ? " Even the worst-case simulation is in profit at 3 years." : ""}`);
 
     // Short-term + regime + environment
     const regimeNote = domRegime.id === "bull" ? "in a bull run" : domRegime.id === "bear" ? "in a bear market" : domRegime.id === "accum" ? "in an accumulation phase" : domRegime.id === "recov" ? "in early recovery" : "in a ranging market";
@@ -2407,16 +2393,8 @@ export default function MMARDashboard() {
   const riskLevels = [5, 10, 25, 50, 75, 90, 95];
 
   const plMatrixRows = riskLevels.map(rl => {
-    // Interpolate between empirical percentile anchor points
-    const anchors = [
-      { p: 1, r: empBands.floor }, { p: 5, r: empBands.deepValue }, { p: 10, r: empBands.support },
-      { p: 50, r: resMean }, { p: 90, r: empBands.overheated }, { p: 95, r: empBands.cycleTop }, { p: 99, r: empBands.bubble },
-    ];
-    let lo = anchors[0], hi = anchors[anchors.length - 1];
-    for (let i = 0; i < anchors.length - 1; i++) { if (rl >= anchors[i].p && rl <= anchors[i + 1].p) { lo = anchors[i]; hi = anchors[i + 1]; break; } }
-    const t = lo.p === hi.p ? 0 : (rl - lo.p) / (hi.p - lo.p);
-    const res = lo.r + t * (hi.r - lo.r);
-    return { rl, price: Math.exp(Math.log(plToday) + res) };
+    const z = normInv(rl / 100);
+    return { rl, price: Math.exp(Math.log(plToday) + resMean + z * resStd) };
   });
   const mcMatrixRows = riskLevels.map(rl => {
     const pts = [{ p: 5, v: last.p5 }, { p: 25, v: last.p25 }, { p: 50, v: last.p50 }, { p: 75, v: last.p75 }, { p: 95, v: last.p95 }];
@@ -2428,11 +2406,11 @@ export default function MMARDashboard() {
 
   // Key levels
   const levels = [
-    { label: "Cycle top zone", price: +Math.exp(Math.log(plToday) + empBands.cycleTop).toFixed(0), color: "#EB5757", sigma: "P95" },
-    { label: "Overheated zone", price: +Math.exp(Math.log(plToday) + empBands.overheated).toFixed(0), color: "#F2994A", sigma: "P90" },
+    { label: "Bubble territory", price: +Math.exp(Math.log(plToday) + resMean + 2 * resStd).toFixed(0), color: "#EB5757", sigma: "+2σ" },
+    { label: "Cycle ceiling", price: +Math.exp(Math.log(plToday) + resMean + resStd).toFixed(0), color: "#F2994A", sigma: "+1σ" },
     { label: "Fair value (Power Law)", price: plToday, color: "#27AE60", sigma: "0" },
-    { label: "Support zone", price: +Math.exp(Math.log(plToday) + empBands.support).toFixed(0), color: "#2F80ED", sigma: "P10" },
-    { label: "Deep value zone", price: +Math.exp(Math.log(plToday) + empBands.deepValue).toFixed(0), color: "#56CCF2", sigma: "P5" },
+    { label: "Normal correction floor", price: +Math.exp(Math.log(plToday) + resMean - resStd).toFixed(0), color: "#2F80ED", sigma: "−1σ" },
+    { label: "Deep accumulation zone", price: +Math.exp(Math.log(plToday) + resMean - 2 * resStd).toFixed(0), color: "#56CCF2", sigma: "−2σ" },
   ];
 
   // PL chart
@@ -2680,11 +2658,11 @@ export default function MMARDashboard() {
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 0, marginBottom: 14 }}>
                 {[
-                  { label: "Cycle top (P95)", price: pl1yBands.p2up, color: "#EB5757" },
-                  { label: "Overheated (P90)", price: pl1yBands.p1up, color: "#F2994A" },
+                  { label: "Best case (+2σ)", price: pl1yBands.p2up, color: "#EB5757" },
+                  { label: "Ceiling (+1σ)", price: pl1yBands.p1up, color: "#F2994A" },
                   { label: "Fair value", price: pl1yBands.fair, color: "#27AE60" },
-                  { label: "Support (P10)", price: pl1yBands.p1dn, color: "#2F80ED" },
-                  { label: "Deep value (P5)", price: pl1yBands.p2dn, color: "#56CCF2" },
+                  { label: "Support (−1σ)", price: pl1yBands.p1dn, color: "#2F80ED" },
+                  { label: "Worst case (−2σ)", price: pl1yBands.p2dn, color: "#56CCF2" },
                 ].map(({ label, price, color }, i) => {
                   const pct = ((price - S0) / S0 * 100);
                   return (
@@ -2783,11 +2761,11 @@ export default function MMARDashboard() {
             </div>
             <div className="legend-row">
               {[
-                { color: "#EB5757", label: "Cycle top (P95)", dash: false },
-                { color: "#F2994A", label: "Overheated (P90)", dash: true },
+                { color: "#EB5757", label: "Bubble (+2σ)", dash: false },
+                { color: "#F2994A", label: "Ceiling (+1σ)", dash: true },
                 { color: "#27AE60", label: "Fair Value", dash: false },
-                { color: "#2F80ED", label: "Support (P10)", dash: true },
-                { color: "#56CCF2", label: "Deep value (P5)", dash: false },
+                { color: "#2F80ED", label: "Support (−1σ)", dash: true },
+                { color: "#56CCF2", label: "Accumulation (−2σ)", dash: false },
                 { color: "#37352F", label: "BTC Price", dash: false },
               ].map(({ color, dash, label }) => (
                 <div key={label} style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -2804,11 +2782,11 @@ export default function MMARDashboard() {
                   <YAxis domain={[autoMin, autoMax]} ticks={yTicks} tick={{ fill: "#9B9A97", fontSize: 10, fontFamily: "'DM Mono', monospace" }} tickLine={false} tickFormatter={fmtY} width={55} />
                   <Tooltip {...tooltipStyle} labelFormatter={(v, payload) => payload?.[0]?.payload?.date || fmtLogT(v)} formatter={(v, n) => [fmtK(Math.pow(10, v)), n]} />
                   {lastLogT && <ReferenceLine x={lastLogT} stroke="#E8E5E0" strokeDasharray="4 2" />}
-                  <Line type="monotone" dataKey="lR2up" stroke="#EB5757" strokeWidth={1.2} dot={false} name="Cycle top" connectNulls />
-                  <Line type="monotone" dataKey="lR1up" stroke="#F2994A" strokeWidth={1.2} strokeDasharray="5 3" dot={false} name="Overheated" connectNulls />
+                  <Line type="monotone" dataKey="lR2up" stroke="#EB5757" strokeWidth={1.2} dot={false} name="Bubble" connectNulls />
+                  <Line type="monotone" dataKey="lR1up" stroke="#F2994A" strokeWidth={1.2} strokeDasharray="5 3" dot={false} name="Ceiling" connectNulls />
                   <Line type="monotone" dataKey="lPl" stroke="#27AE60" strokeWidth={2} dot={false} name="Fair Value" connectNulls />
                   <Line type="monotone" dataKey="lR1dn" stroke="#2F80ED" strokeWidth={1.2} strokeDasharray="5 3" dot={false} name="Support" connectNulls />
-                  <Line type="monotone" dataKey="lR2dn" stroke="#56CCF2" strokeWidth={1.2} dot={false} name="Deep value" connectNulls />
+                  <Line type="monotone" dataKey="lR2dn" stroke="#56CCF2" strokeWidth={1.2} dot={false} name="Accumulation" connectNulls />
                   <Line type="monotone" dataKey="lPrice" stroke="#37352F" strokeWidth={2.5} dot={false} name="BTC" connectNulls />
                 </LineChart>
               </ResponsiveContainer>
@@ -2905,7 +2883,7 @@ export default function MMARDashboard() {
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
                 <thead>
                   <tr style={{ background: "#FAFAF8" }}>
-                    {["Horizon", "Deep value", "Support", "Fair Value", "Overheated", "Cycle top"].map((h, i) => (
+                    {["Horizon", "−2σ Floor", "−1σ Support", "Fair Value", "+1σ Ceiling", "+2σ Bubble"].map((h, i) => (
                       <th key={h} style={{ padding: "9px 10px", textAlign: i === 0 ? "left" : "right", color: ["", "#56CCF2", "#2F80ED", "#27AE60", "#F2994A", "#EB5757"][i] || "#9B9A97", fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em", borderBottom: "1px solid #E8E5E0", whiteSpace: "nowrap" }}>{h}</th>
                     ))}
                   </tr>
@@ -3251,7 +3229,7 @@ export default function MMARDashboard() {
                       <div style={{ fontSize: 10, color: "#9B9A97", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.04em" }}>σ deviation</div>
                       <div style={{ fontSize: 28, fontWeight: 700, fontFamily: "'DM Mono', monospace", color: curSig > 1 ? "#EB5757" : curSig > 0.5 ? "#F2994A" : curSig > -0.5 ? "#27AE60" : curSig > -1 ? "#2F80ED" : "#56CCF2" }}>{curSig >= 0 ? "+" : ""}{curSig.toFixed(2)}σ</div>
                       <div style={{ fontSize: 11, color: "#BFBFBA", marginTop: 2 }}>
-                        {curSig > 1.35 ? "Cycle top zone" : curSig > 0.5 ? "Above fair value" : curSig > -0.5 ? "Near fair value" : curSig > -1.35 ? "Undervalued" : "Deep value"}
+                        {curSig > 1.5 ? "Bubble zone" : curSig > 0.5 ? "Above fair value" : curSig > -0.5 ? "Near fair value" : curSig > -1.5 ? "Undervalued" : "Deep value"}
                       </div>
                     </div>
                   </div>
@@ -3592,7 +3570,7 @@ export default function MMARDashboard() {
                     </table>
                   </div>
                   <p style={{ fontSize: 11, color: "#BFBFBA", marginTop: 12, lineHeight: 1.5, margin: "12px 0 0" }}>
-                    Burger's parameters are frozen from his original 2019 fit and have not been updated since. Our model refits the Power Law from scratch on every page load using all available data. A fresh OLS on the same data produces nearly identical results to our WLS (b ≈ 5.30 vs 5.33), confirming the divergence from Burger's b = 5.845 is not a methodology difference but a data difference: 7 additional years of price history, including a prolonged period where BTC traded below the original fit. The lower fair value makes the model more useful for detecting cycle tops in the current era.
+                    Burger's parameters are from his original OLS regression (~2019). Our WLS gives more weight to recent liquid-market data, which may shift the intercept and slope. The key difference: our model refits from scratch on every page load with all data through today, while Burger's params are frozen from 2019. A fair value delta under ±15% indicates strong structural agreement; larger deltas reflect BTC's position in the current cycle relative to historical norms.
                   </p>
                 </div>
               );
@@ -3627,7 +3605,7 @@ export default function MMARDashboard() {
             <div style={{ fontSize: 14, color: "#4F4F4F", lineHeight: 1.8 }}>
               <p style={{ margin: "0 0 12px", fontWeight: 500, color: "#37352F" }}>The model runs a five-step pipeline, each step building on the previous one:</p>
 
-              <p style={{ margin: "0 0 12px" }}><strong style={{ color: "#37352F" }}>Step 1 — Power Law regression (weighted).</strong> We fit log(price) = a + b × log(days since genesis) using Weighted Least Squares across all data from 2010 to today. The weights follow an exponential decay with a ~8-year half-life: recent data from liquid, mature markets weighs more than early-era data from thin, unreliable exchanges. This prevents a $0.05 price from 2010 (traded between a handful of people) from having the same influence as a $70k price from 2024 (traded on venues with billions in daily volume). The output is the growth exponent b, the fair value curve, and the residuals. The σ bands are computed from unweighted residuals to preserve the full historical deviation range.</p>
+              <p style={{ margin: "0 0 12px" }}><strong style={{ color: "#37352F" }}>Step 1 — Power Law regression (weighted).</strong> We fit log(price) = a + b × log(days since genesis) using Weighted Least Squares across all data from 2010 to today. The weights follow an exponential decay with a ~4-year half-life: recent data from liquid, mature markets weighs more than early-era data from thin, unreliable exchanges. This prevents a $0.05 price from 2010 (traded between a handful of people) from having the same influence as a $70k price from 2024 (traded on venues with billions in daily volume). The output is the growth exponent b, the fair value curve, and the residuals. The σ bands are computed from unweighted residuals to preserve the full historical deviation range.</p>
 
               <p style={{ margin: "0 0 12px" }}><strong style={{ color: "#37352F" }}>Step 2 — Fractal structure calibration.</strong> Using daily residual returns from the last ~4 years (a rolling window that adapts as new data arrives), we estimate two parameters. The Hurst exponent (H) is measured via Detrended Fluctuation Analysis (DFA-1), which is more robust than the classical R/S method for short and non-stationary series. DFA integrates the demeaned series, splits it into windows at multiple scales, fits a linear trend within each window, computes the RMS of the detrended fluctuations, and extracts H as the slope of log(F) vs log(scale). Both forward and backward window passes are used for better coverage. H above 0.5 indicates trend persistence, below 0.5 indicates mean-reversion. The intermittency parameter (λ²) is extracted from the multifractal partition function by fitting the scaling exponent τ(q) across moment orders q = −2 to 5 at time scales from 8 to 128 days. This captures how volatility concentrates at different frequencies. Standard financial models skip both measurements entirely and assume returns are independent and normally distributed.</p>
 
