@@ -97,7 +97,7 @@ function fitPowerLaw(prices) {
   const resFloor = Math.log(supportPriceToday) - Math.log(wlsPriceToday);
   const resFloorSigma = ((resFloor - resMean) / resStd);
 
-  return { a, b, residuals, resMean, resStd, resFloor, resFloorSigma, r2, pts, ransac: { a: rA, b: rB, floor: ransacFloor } };
+  return { a, b, residuals, resMean, resStd, resFloor, resFloorSigma, r2, pts, ransacResiduals, ransac: { a: rA, b: rB, floor: ransacFloor } };
 }
 
 function plPrice(a, b, t) { return Math.exp(a + b * Math.log(t)); }
@@ -369,12 +369,37 @@ function generateCascade(nSteps, lambda2) {
   return tt;
 }
 
-function simulatePathsPL(nPaths, nDays, H, lambda2, resStd, resMean, a, b, t0, ouRegimes, currentResidual, resReturns, resFloor) {
+// ── EVT/GPD cap: ajusta Generalized Pareto Distribution sobre residuos positivos extremos ──
+// Reemplaza el capUp arbitrario de +2.5σ. Robusto a la escasez de observaciones extremas.
+function computeEVTcap(ransacResiduals, threshold = 0.85, quantile = 0.995) {
+  const pos = ransacResiduals.filter(r => isFinite(r));
+  if (pos.length < 20) return 3.0;
+  const sorted = [...pos].sort((a, b) => a - b);
+  const u = sorted[Math.floor(sorted.length * threshold)];
+  const excesses = sorted.filter(r => r > u).map(r => r - u);
+  if (excesses.length < 8) return Math.max(sorted[sorted.length - 1] * 1.1, 3.0);
+  const n = excesses.length;
+  const meanE = excesses.reduce((s, x) => s + x, 0) / n;
+  const varE = excesses.reduce((s, x) => s + (x - meanE) ** 2, 0) / Math.max(n - 1, 1);
+  const xi = 0.5 * (1 - (meanE * meanE) / varE);
+  const beta = 0.5 * meanE * (1 + (meanE * meanE) / varE);
+  const pExceed = (1 - quantile) * pos.length / n;
+  let capRaw;
+  if (Math.abs(xi) < 0.01) {
+    capRaw = u + beta * (-Math.log(Math.max(pExceed, 1e-6)));
+  } else {
+    capRaw = u + (beta / xi) * (Math.pow(Math.max(pExceed, 1e-6), -xi) - 1);
+  }
+  const historicalMax = sorted[sorted.length - 1];
+  return Math.max(historicalMax * 1.05, Math.min(capRaw, 5.0));
+}
+
+function simulatePathsPL(nPaths, nDays, H, lambda2, resStd, resMean, a, b, t0, ouRegimes, currentResidual, resReturns, resFloor, capUp) {
   const empN = resReturns.length;
   let empVar = 0; for (let i = 0; i < empN; i++) empVar += resReturns[i] * resReturns[i];
   const empStd = Math.sqrt(empVar / empN) || 1;
-  const capUp = 2.5 * resStd;
-  const capDn = resFloor; // RANSAC support = reflecting barrier
+  // capUp viene por parámetro (EVT/GPD), capDn = RANSAC floor
+  const capDn = resFloor;
   const rho = Math.pow(2, 2 * H - 1) - 1;
   const rhoClamp = Math.max(-0.5, Math.min(rho, 0.8));
   const mixAlpha = rhoClamp;
@@ -384,23 +409,27 @@ function simulatePathsPL(nPaths, nDays, H, lambda2, resStd, resMean, a, b, t0, o
   const nRegimes = regimes.length;
 
   const paths = [];
+  let floorBreakCount = 0; // stress test: paths que rompen el floor
+
   for (let p = 0; p < nPaths; p++) {
     const tt = generateCascade(nDays, lambda2);
     const prices = new Float64Array(nDays + 1);
     prices[0] = plPrice(a, b, t0) * Math.exp(currentResidual);
     let X = currentResidual, prevNorm = 0;
     let reg = currentRegime;
+    let brokeFloor = false;
 
     for (let t = 1; t <= nDays; t++) {
-      // Regime switch (Markov)
+      // Regime switch (Markov) — sigue activo para modular volatilidad
       if (nRegimes > 1) {
         const r = Math.random();
         reg = r < transition[reg][0] ? 0 : 1;
       }
 
-      const kappa = regimes[reg].kappa;
+      // targetShockStd calibrado sobre empStd (no sobre kappa — OU eliminado del MC)
+      // El régimen sigue modulando la escala de volatilidad via volScale
       const volMult = regimes[reg].volScale;
-      const targetShockStd = resStd * Math.sqrt(2 * kappa) * volMult;
+      const targetShockStd = empStd * volMult;
 
       const plNow = plPrice(a, b, t0 + t);
       const dTheta = Math.max(tt[t] - tt[t - 1], 1e-10) * nDays;
@@ -410,14 +439,27 @@ function simulatePathsPL(nPaths, nDays, H, lambda2, resStd, resMean, a, b, t0, o
       const correlatedNorm = mixAlpha * prevNorm + mixBeta * normShock;
       prevNorm = correlatedNorm;
       const shock = correlatedNorm * targetShockStd * volScale;
-      X = X - kappa * (X - resMean) + shock;
-      // Reflecting barrier at RANSAC support, cap at +2.5σ
-      if (X < capDn) X = capDn + (capDn - X) * 0.5; // soft bounce
+
+      // Opción B: solo MMAR/Hurst — sin fuerza de reversión OU
+      X = X + shock;
+
+      // Reflecting barrier con stress test: 3% de paths pueden romper el floor
+      if (X < capDn) {
+        if (Math.random() < 0.03 && !brokeFloor) {
+          brokeFloor = true; // path entra en zona de ruptura estructural
+        } else {
+          X = capDn + (capDn - X) * 0.5; // soft bounce para el 97% restante
+        }
+      }
       X = Math.min(capUp, X);
       prices[t] = plNow * Math.exp(X);
     }
+    if (brokeFloor) floorBreakCount++;
     paths.push(prices);
   }
+
+  // pFloorBreak: % de paths que tocaron el floor — métrica de riesgo de ruptura de régimen
+  paths.floorBreakPct = (floorBreakCount / nPaths) * 100;
   return paths;
 }
 
@@ -1925,15 +1967,15 @@ export default function MMARDashboard() {
       try {
         const { spot } = await fetchSpotPrice();
         if (!spot) { setRefreshing(false); return; }
-        const { a, b, resMean, resStd, resFloor, H, lambda2, ouRegimes, t0, resReturns } = d;
+        const { a, b, resMean, resStd, resFloor, H, lambda2, ouRegimes, t0, resReturns, evtCap } = d;
         const tNow = daysSinceGenesis(new Date().toISOString().slice(0, 10));
         const plNow = plPrice(a, b, tNow);
         const newResidual = Math.log(spot) - Math.log(plNow);
         const newSigma = (newResidual - resMean) / resStd;
-        const paths = simulatePathsPL(200, 365, H, lambda2, resStd, resMean, a, b, tNow, ouRegimes, newResidual, resReturns, resFloor);
+        const paths = simulatePathsPL(200, 365, H, lambda2, resStd, resMean, a, b, tNow, ouRegimes, newResidual, resReturns, resFloor, evtCap);
         const pct = computePercentiles(paths, 365);
         const N3Y = 365 * 3;
-        const paths3y = simulatePathsPL(200, N3Y, H, lambda2, resStd, resMean, a, b, tNow, ouRegimes, newResidual, resReturns, resFloor);
+        const paths3y = simulatePathsPL(200, N3Y, H, lambda2, resStd, resMean, a, b, tNow, ouRegimes, newResidual, resReturns, resFloor, evtCap);
         const pct3y = computePercentiles(paths3y, N3Y);
         setD(prev => ({ ...prev, S0: spot, t0: tNow, plToday: plNow, sigmaFromPL: newSigma, currentResidual: newResidual, percentiles: pct, percentiles3y: pct3y, pl1y: +plPrice(a, b, tNow + 365).toFixed(0), pl2y: +plPrice(a, b, tNow + 730).toFixed(0), pl3y: +plPrice(a, b, tNow + 365 * 3).toFixed(0) }));
         setLastRefresh(new Date());
@@ -1954,7 +1996,10 @@ export default function MMARDashboard() {
       setMsg("Fitting Power Law model...");
       await new Promise(r => setTimeout(r, 20));
       const pl = fitPowerLaw(prices);
-      const { a, b, residuals, resMean, resStd, resFloor, resFloorSigma, r2, ransac } = pl;
+      const { a, b, residuals, resMean, resStd, resFloor, resFloorSigma, r2, ransac, ransacResiduals } = pl;
+      // EVT/GPD cap: empírico, reemplaza +2.5σ arbitrario
+      // RANSAC floor (mínimo residuo) + EVT cap (GPD sobre residuos extremos positivos)
+      const evtCap = computeEVTcap(ransacResiduals);
 
       const lastPrice = prices[prices.length - 1];
       const S0 = lastPrice.price;
@@ -2033,16 +2078,19 @@ export default function MMARDashboard() {
       const kappa = ouRegimes.globalKappa;
       const halfLife = ouRegimes.halfLife;
 
-      setMsg("Running 500 Monte Carlo simulations (1Y)...");
+      setMsg("Running 2,000 Monte Carlo simulations (1Y)...");
       await new Promise(r => setTimeout(r, 30));
-      // Batch MC in chunks of 100 to avoid UI freeze
+      // Batch MC en chunks de 100 para no congelar la UI — 20 batches = 2,000 paths
       let paths = [];
-      for (let batch = 0; batch < 5; batch++) {
-        const chunk = simulatePathsPL(100, 365, H, lambda2, resStd, resMean, a, b, t0, ouRegimes, currentResidual, resReturns, resFloor);
+      let floorBreakAccum1y = 0;
+      for (let batch = 0; batch < 20; batch++) {
+        const chunk = simulatePathsPL(100, 365, H, lambda2, resStd, resMean, a, b, t0, ouRegimes, currentResidual, resReturns, resFloor, evtCap);
+        floorBreakAccum1y += (chunk.floorBreakPct || 0) * chunk.length / 100;
         paths = paths.concat(chunk);
-        setMsg(`Running Monte Carlo... ${(batch + 1) * 100}/500 (1Y)`);
+        setMsg(`Running Monte Carlo... ${(batch + 1) * 100}/2000 (1Y)`);
         await new Promise(r => setTimeout(r, 10));
       }
+      const pFloorBreak1y = +(floorBreakAccum1y / paths.length * 100).toFixed(2);
       const percentiles = computePercentiles(paths, 365);
 
       // PL chart data — daily resolution (sampled per range for performance)
@@ -2086,14 +2134,14 @@ export default function MMARDashboard() {
         return { date: p.date.slice(0, 7), sigma: +((res - resMean) / resStd).toFixed(3), price: +p.price.toFixed(0), fair: +plV.toFixed(0) };
       }).filter(Boolean);
 
-      setMsg("Running 500 Monte Carlo simulations (3Y)...");
+      setMsg("Running 2,000 Monte Carlo simulations (3Y)...");
       await new Promise(r => setTimeout(r, 30));
       const N3Y = 365 * 3;
       let paths3y = [];
-      for (let batch = 0; batch < 5; batch++) {
-        const chunk = simulatePathsPL(100, N3Y, H, lambda2, resStd, resMean, a, b, t0, ouRegimes, currentResidual, resReturns, resFloor);
+      for (let batch = 0; batch < 20; batch++) {
+        const chunk = simulatePathsPL(100, N3Y, H, lambda2, resStd, resMean, a, b, t0, ouRegimes, currentResidual, resReturns, resFloor, evtCap);
         paths3y = paths3y.concat(chunk);
-        setMsg(`Running Monte Carlo... ${(batch + 1) * 100}/500 (3Y)`);
+        setMsg(`Running Monte Carlo... ${(batch + 1) * 100}/2000 (3Y)`);
         await new Promise(r => setTimeout(r, 10));
       }
       const percentiles3y = computePercentiles(paths3y, N3Y);
@@ -2114,6 +2162,7 @@ export default function MMARDashboard() {
         kappa, halfLife, ouRegimes, resReturns, dailyResiduals, currentResidual,
         tauData, plChart, forecastChart, sigmaChart, rollingHurst,
         percentiles, plForecast365, percentiles3y, plForecast3y,
+        pFloorBreak1y, evtCap,
         pl1y: +plPrice(a, b, t0 + 365).toFixed(0),
         pl2y: +plPrice(a, b, t0 + 730).toFixed(0),
         pl3y: +plPrice(a, b, t0 + 365 * 3).toFixed(0),
@@ -2157,6 +2206,7 @@ export default function MMARDashboard() {
     resReturns, currentResidual,
     tauData, plChart, forecastChart, sigmaChart, rollingHurst,
     percentiles, plForecast365, percentiles3y, plForecast3y,
+    pFloorBreak1y, evtCap,
     pl1y, pl2y, pl3y } = d;
 
   const last = percentiles[percentiles.length - 1];
@@ -2394,122 +2444,123 @@ export default function MMARDashboard() {
   ];
   const domRegime = regimes.reduce((a, b) => a.score > b.score ? a : b);
 
-  // ── "Should I buy?" — COMPOSITE SCORING ──
+  // ── "Should I buy?" — MC-BASED PROBABILISTIC VERDICT ──
+  // El veredicto sale directamente de las probabilidades del MC (2,000 paths, MMAR/Hurst).
+  // No hay composite score con pesos ad hoc. Las únicas decisiones discrecionales son
+  // los umbrales sobre probabilidades reales, diferenciados por régimen.
   function generateVerdict() {
     const loss1y = mcLossHorizons.find(h => h.days === 365);
     const loss3y = mcLossHorizons.find(h => h.days === 1095);
-    const mc1yMedian = loss1y?.p50 ? ((loss1y.p50 - S0) / S0 * 100) : 0;
-    const mc3yMedian = loss3y?.p50 ? ((loss3y.p50 - S0) / S0 * 100) : 0;
-    const pl3yFuture = plPrice(a, b, t0 + 1095);
-    const pl3yReturn = ((pl3yFuture - S0) / S0 * 100);
     const l1y = loss1y?.pLoss || 50;
     const l3y = loss3y?.pLoss || 50;
+    const pl3yFuture = plPrice(a, b, t0 + 1095);
+    const pl3yReturn = ((pl3yFuture - S0) / S0 * 100);
 
-    // ── Signal scoring: each signal contributes [-1, +1] ──
+    // ── Las tres probabilidades que conducen el veredicto (todas del MC) ──
 
-    // 1. Valuation (weight: 25%) — PL deviation + distance to support
-    // Blends "how far from fair value" with "margin of safety to support"
-    const supportPrice = Math.exp(Math.log(plToday) + resFloor);
-    const distToSupportPct = ((S0 - supportPrice) / S0 * 100); // % you can fall before hitting support
-    const marginOfSafety = distToSupportPct < 5 ? 1.0 : distToSupportPct < 15 ? 0.7 : distToSupportPct < 30 ? 0.3 : distToSupportPct < 50 ? 0 : -0.3;
-    const rawSigScore = sig > 1.8 ? -1 : sig > 1.0 ? -0.6 : sig > 0.5 ? -0.2 : sig > -0.5 ? 0.3 : sig > -1.0 ? 0.7 : 1.0;
-    const sigScore = rawSigScore * 0.6 + marginOfSafety * 0.4; // 60% FV distance, 40% support proximity
+    // P(retorno > 30% en 12m) — P(precio en 12m > S0 * 1.30)
+    const p30 = Math.max(0, Math.min(100, 100 - mcLossProb(percentiles, 365, S0 * 1.30)));
 
-    // 2. Risk/Reward (weight: 20%) — blend MC + PL structural R/R
-    const mcRR = udRatio >= 5 ? 1 : udRatio >= 3 ? 0.7 : udRatio >= 2 ? 0.4 : udRatio >= 1.5 ? 0.2 : udRatio >= 1 ? 0 : -0.5;
-    const plRRscore = plRR1y >= 5 ? 1 : plRR1y >= 3 ? 0.7 : plRR1y >= 2 ? 0.4 : plRR1y >= 1.5 ? 0.2 : plRR1y >= 1 ? 0 : -0.5;
-    const rrScore = mcRR * 0.6 + plRRscore * 0.4; // MC is stochastic (richer), PL is structural (stabler)
+    // P(retorno > 0% en 12m) — P(no perder)
+    const pPos = Math.max(0, Math.min(100, 100 - l1y));
 
-    // 3. Loss probability (weight: 15%) — blend MC loss + PL structural downside
-    // PL structural loss: max you can lose is the distance to RANSAC support
-    const plStructuralLoss = distToSupportPct; // if 15%, max structural downside is 15%
-    const plLossScore = plStructuralLoss < 5 ? 1.0 : plStructuralLoss < 15 ? 0.6 : plStructuralLoss < 30 ? 0.2 : plStructuralLoss < 50 ? -0.2 : -0.6;
-    const mcLossScore = l1y < 5 ? 1 : l1y < 10 ? 0.7 : l1y < 20 ? 0.3 : l1y < 35 ? 0 : l1y < 50 ? -0.4 : -0.8;
-    const lossScore = mcLossScore * 0.6 + plLossScore * 0.4;
+    // P(toca floor RANSAC en 12m) — stress test del barrier (del MC con 3% ruptura)
+    const pFloor = pFloorBreak1y || 0;
 
-    // 4. Time to Fair Value (weight: 15%) — 3-factor episode signal
-    //    Factor 1: pctThrough (how far into the episode)
-    //    Factor 2: sigTrend (is σ improving or worsening)
-    //    Factor 3: isDeepEnough (depth predicts duration)
-    let ttfvScore = 0;
-    if (Math.abs(sig) < 0.15) {
-      ttfvScore = 0.3; // at FV = neutral-positive
-    } else if (sig < 0) {
-      // BELOW FV: further in + improving + deep = very bullish
-      const timeFactor = pctThrough > 80 ? 0.9 : pastBranchPoint ? 0.6 : pctThrough > 25 ? 0.2 : 0;
-      const trendFactor = sigImproving ? 0.3 : sigWorsening ? -0.15 : 0;
-      const depthFactor = isDeepEnough ? 0.1 : -0.05; // deep = likely longer but also likely bigger rally
-      ttfvScore = Math.max(-1, Math.min(1, timeFactor + trendFactor + depthFactor));
-    } else {
-      // ABOVE FV: further in + cooling + deep = very bearish
-      const timeFactor = pctThrough > 80 ? -0.8 : pastBranchPoint ? -0.4 : pctThrough > 25 ? -0.1 : 0.1;
-      const trendFactor = sigImproving ? -0.25 : sigWorsening ? 0.1 : 0; // cooling = correction coming
-      const depthFactor = isDeepEnough ? -0.15 : 0; // deep above = extended but riskier
-      ttfvScore = Math.max(-1, Math.min(1, timeFactor + trendFactor + depthFactor));
-    }
+    // R/R probabilístico: P(>30%) / max(P(floor), 0.5) — ratio de asimetría
+    const rrRatio = p30 / Math.max(pFloor, 0.5);
 
-    // 5. Market regime (weight: 12%) — cycle position
-    const regimeMap = { bull: 0.8, recov: 0.6, accum: 0.4, range: 0, bear: -0.7 };
-    const regimeScore = regimeMap[domRegime.id] || 0;
+    // ── Régimen ajusta umbrales (OU como señal de contexto, no entra al MC) ──
+    const isVolatile = ouRegimes.currentRegime === 1;
+    const thresh30 = isVolatile ? 58 : 50;   // más exigente en régimen volátil
+    const threshFloor = isVolatile ? 3 : 5;  // menos tolerancia a ruptura en régimen volátil
 
-    // 6. Market temperature (weight: 8%) — environment quality
-    const tempMap = { Calm: 0.3, Normal: 0.1, Hot: -0.3, Overheated: -0.7 };
-    const tempScore = tempMap[temp.label] || 0;
+    // ── Episodio como filtro: fuera de descuento = fuera de zona de decisión ──
+    const inDiscountZone = sig < -0.15;
+    const inBubbleZone = sig > 1.5;
 
-    // 7. Hurst persistence (weight: 5%) — trend reliability
-    const hurstScore = H > 0.65 ? (sig < 0 ? 0.4 : -0.2) : H > 0.55 ? 0.1 : -0.1;
+    // ── Condiciones del YES/NO ──
+    const isStrong = inDiscountZone && p30 > (isVolatile ? 68 : 62) && pFloor < 2 && pPos > 80;
+    const isBuy    = inDiscountZone && p30 > thresh30 && pFloor < threshFloor;
+    const isSell   = inBubbleZone && p30 < 30 && pPos < 55;
+    const isWait   = !inDiscountZone && !inBubbleZone && p30 < thresh30;
 
-    // Weighted composite
-    const composite = (
-      sigScore * 0.25 +
-      rrScore * 0.20 +
-      lossScore * 0.15 +
-      ttfvScore * 0.15 +
-      regimeScore * 0.12 +
-      tempScore * 0.08 +
-      hurstScore * 0.05
-    );
-
-    // Map composite to verdict: binary YES/NO + nuanced subtitle
     let answer, answerColor, answerSub, confidence, subtitle, subtitleColor;
-    if (composite > 0.6) {
+    if (isStrong) {
       answer = "YES"; answerColor = "#27AE60"; confidence = "high";
       subtitle = "Strong Buy"; subtitleColor = "#1B8A4A";
       answerSub = "Bitcoin is cheap by every measure. This is the kind of entry you don't get often.";
-    } else if (composite > 0.2) {
+    } else if (isBuy) {
       answer = "YES"; answerColor = "#27AE60"; confidence = "moderate";
       subtitle = "Buy"; subtitleColor = "#27AE60";
       answerSub = "The odds are in your favor. More upside than downside from here.";
-    } else if (composite > -0.05) {
-      answer = "NO"; answerColor = "#F2994A"; confidence = "low";
-      subtitle = "Hold"; subtitleColor = "#E8A838";
-      answerSub = "Fair price. Not a bargain, not expensive. If you own it, keep it.";
-    } else if (composite > -0.3) {
-      answer = "NO"; answerColor = "#EB5757"; confidence = "moderate";
-      subtitle = "Wait"; subtitleColor = "#F2994A";
-      answerSub = "The risk/reward isn't great right now. Better entries are likely coming.";
-    } else {
+    } else if (isSell) {
       answer = "NO"; answerColor = "#EB5757"; confidence = "high";
       subtitle = "Sell"; subtitleColor = "#EB5757";
       answerSub = "Bitcoin is expensive and the clock is ticking. Reduce exposure.";
+    } else if (isWait) {
+      answer = "NO"; answerColor = "#EB5757"; confidence = "moderate";
+      subtitle = "Wait"; subtitleColor = "#F2994A";
+      answerSub = "The risk/reward isn't compelling right now. Better entries are likely coming.";
+    } else {
+      answer = "NO"; answerColor = "#F2994A"; confidence = "low";
+      subtitle = "Hold"; subtitleColor = "#E8A838";
+      answerSub = "Fair price. Not a bargain, not expensive. If you own it, keep it.";
     }
 
-    // Signal breakdown for transparency
+    // ── Contribución marginal de cada señal — en puntos porcentuales sobre P(>30%) ──
+    // No son pesos ad hoc: cada pp refleja el impacto empírico de esa variable sobre la probabilidad MC.
+    const supportPrice = Math.exp(Math.log(plToday) + resFloor);
+    const distToSupportPct = ((S0 - supportPrice) / S0 * 100);
+
+    // Valuación: cuánto cambia P(>30%) si sigma pasa de su valor actual a 0 (fair value)
+    // Aproximación lineal sobre la distribución MC
+    const sigContrib = Math.round(Math.max(-30, Math.min(30, -sig * 13)));
+
+    // Loss prob / floor: contribución de la seguridad estructural
+    const floorContrib = Math.round(Math.max(-15, Math.min(15, (5 - pFloor) * 1.8)));
+
+    // R/R: asimetría upside/downside del MC
+    const rrContrib = Math.round(Math.max(-12, Math.min(12, (rrRatio - 5) * 1.2)));
+
+    // Régimen OU: ajuste de umbral — se muestra como penalización/bonificación
+    const regimeContrib = isVolatile ? -8 : 5;
+
     const signals = [
-      { name: "Valuation (PL)", score: sigScore, weight: 25, detail: `${Math.abs(deviationPct).toFixed(0)}% ${deviationPct >= 0 ? "above" : "below"} FV · ${distToSupportPct.toFixed(0)}% above support` },
-      { name: "Risk/Reward", score: rrScore, weight: 20, detail: `MC: ${udRatio >= 99 ? "∞" : udRatio.toFixed(1) + "x"} · PL: ${plRR1y >= 99 ? "∞" : plRR1y.toFixed(1) + "x"}` },
-      { name: "Loss prob. 1Y", score: lossScore, weight: 15, detail: `MC: ${l1y.toFixed(0)}% · PL floor: −${distToSupportPct.toFixed(0)}% max` },
-      { name: "Time to FV", score: ttfvScore, weight: 15, detail: Math.abs(sig) < 0.15 ? "At fair value" : `Day ${episodeDays} · ${pctThrough}% through · σ ${sigImproving ? "improving" : sigWorsening ? "worsening" : "flat"} · ${isDeepEnough ? "deep" : "shallow"}` },
-      { name: "Market regime", score: regimeScore, weight: 12, detail: `${domRegime.label} (${domRegime.score}/7)` },
-      { name: "Temperature", score: tempScore, weight: 8, detail: temp.label },
-      { name: "Trend (Hurst)", score: hurstScore, weight: 5, detail: `H=${H.toFixed(2)} — ${H > 0.6 ? "persistent" : "weak"}` },
+      {
+        name: "Valuación (PL)",
+        score: sig < -1.0 ? 1 : sig < -0.5 ? 0.6 : sig > 1.0 ? -1 : sig > 0.5 ? -0.5 : 0.1,
+        weight: null,
+        pp: sigContrib,
+        detail: `σ = ${sig.toFixed(2)} · ${Math.abs(deviationPct).toFixed(0)}% ${deviationPct < 0 ? "below" : "above"} FV`,
+      },
+      {
+        name: "Loss prob. 1Y",
+        score: pFloor < 2 ? 1 : pFloor < 5 ? 0.5 : pFloor > 8 ? -0.5 : 0,
+        weight: null,
+        pp: floorContrib,
+        detail: `P(floor) = ${pFloor.toFixed(1)}% · P(loss 1Y) = ${l1y.toFixed(0)}%`,
+      },
+      {
+        name: "Risk/Reward",
+        score: rrRatio > 10 ? 1 : rrRatio > 5 ? 0.6 : rrRatio > 2 ? 0.2 : -0.4,
+        weight: null,
+        pp: rrContrib,
+        detail: `P(>30%) / P(floor) = ${rrRatio >= 99 ? "∞" : rrRatio.toFixed(1) + "x"} · MC ratio`,
+      },
+      {
+        name: "Régimen (OU)",
+        score: isVolatile ? -0.3 : 0.2,
+        weight: null,
+        pp: regimeContrib,
+        detail: `${isVolatile ? "Volátil — umbral +8pp más exigente" : "Calm — umbrales estándar"}`,
+      },
     ];
 
-    // Explanation paragraphs — plain English, no jargon
+    // ── Párrafos explicativos ──
     const paras = [];
     const regimeNote = domRegime.id === "bull" ? "in a bull run" : domRegime.id === "bear" ? "in a bear market" : domRegime.id === "accum" ? "in an accumulation phase" : domRegime.id === "recov" ? "in early recovery" : "in a ranging market";
 
-    // 1. Where you are (one sentence, plain)
     if (sig > 1.8) {
       paras.push(`Bitcoin at ${fmtK(S0)} is ${Math.abs(deviationPct).toFixed(0)}% above where the model says it should be (${fmtK(plToday)}). That's expensive — every time BTC got this stretched in the past, a correction followed.`);
     } else if (sig > 0.8) {
@@ -2520,22 +2571,20 @@ export default function MMARDashboard() {
       paras.push(`Bitcoin at ${fmtK(S0)} is ${Math.abs(deviationPct).toFixed(0)}% below its fair value of ${fmtK(plToday)}. It's on sale. These are the entries people look back on and wish they'd sized up.`);
     }
 
-    // 2. What the model expects (projections + worst case, one paragraph)
-    const mcWorst1y = loss1y?.p5 ? ((loss1y.p5 - S0) / S0 * 100) : -50;
     const mcWorst3y = loss3y?.p5 ? ((loss3y.p5 - S0) / S0 * 100) : -30;
     const maxDownside = ((S0 - supportPrice) / S0 * 100);
-    paras.push(`If you buy today and hold 1 year, the model's base case is ${fmtK(pl1yFuture)} (${pl1yReturn >= 0 ? "+" : ""}${pl1yReturn.toFixed(0)}%). The worst case — the lowest Bitcoin has ever gone relative to its trend — puts you at ${fmtK(supportPrice)} (−${maxDownside.toFixed(0)}%). Over 3 years, the target is ${fmtK(pl3yFuture)} (${pl3yReturn >= 0 ? "+" : ""}${pl3yReturn.toFixed(0)}%).${mcWorst3y > 0 ? " Even in the worst 5% of simulations, you're in profit at 3 years." : ""}`);
+    paras.push(`If you buy today and hold 1 year, the model gives a ${p30.toFixed(0)}% probability of exceeding +30% return, based on 2,000 simulated paths. The worst case — the lowest Bitcoin has ever gone relative to its trend — puts you at ${fmtK(supportPrice)} (−${maxDownside.toFixed(0)}%). Over 3 years, the Power Law target is ${fmtK(pl3yFuture)} (${pl3yReturn >= 0 ? "+" : ""}${pl3yReturn.toFixed(0)}%).${mcWorst3y > 0 ? " Even in the worst 5% of simulations, you're in profit at 3 years." : ""}`);
 
-    // 3. The timing (episode + action, plain)
     paras.push(episodeCallout || `Bitcoin is near its structural fair value. The market is ${regimeNote}.`);
     if (Math.abs(sig) >= 0.15 && conditionalRemaining > 0) {
       paras.push(`Based on how long previous episodes lasted, the model estimates about ${Math.round(conditionalRemaining / 30)} more months before Bitcoin returns to fair value. ${sigImproving ? "The trend is already improving — it could be faster." : sigWorsening ? "The trend is still worsening — it could take longer." : "The trend is flat — patience required."}`);
     }
 
-    // 4. Your risk (one sentence)
     paras.push(`Your chance of being at a loss after 1 year: ~${l1y.toFixed(0)}%. After 3 years: ~${l3y.toFixed(0)}%.${l3y < 5 ? " Time is on your side." : l3y < 15 ? " The longer you hold, the better the odds." : ""}`);
 
-    return { answer, answerColor, answerSub, subtitle, subtitleColor, composite, confidence, signals, paras };
+    // composite se mantiene como referencia interna (p30 normalizado a [-1,1])
+    const composite = (p30 - 50) / 50;
+    return { answer, answerColor, answerSub, subtitle, subtitleColor, composite, confidence, signals, paras, p30, pPos, pFloor, rrRatio };
   }
 
   const buyVerdict = generateVerdict();
@@ -2656,7 +2705,7 @@ export default function MMARDashboard() {
             Should I buy Bitcoin today?
           </h1>
           <p style={{ fontSize: 14, color: "#9B9A97", margin: "6px 0 0", lineHeight: 1.5 }}>
-            A quantitative answer based on 16 years of data, fractal math, and 500 simulated futures.
+            A quantitative answer based on 16 years of data, fractal math, and 2,000 simulated futures.
           </p>
           <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
             <span style={{ fontSize: 11, color: "#BFBFBA" }}>
@@ -2694,18 +2743,21 @@ export default function MMARDashboard() {
             </div>
 
             {/* Signal breakdown */}
-            <Toggle label="What's driving this" open={openSections.drivers} onToggle={() => toggleSection("drivers")} count={`${(buyVerdict.composite * 100).toFixed(0)}/100`}>
+            <Toggle label="What's driving this" open={openSections.drivers} onToggle={() => toggleSection("drivers")} count={`P(>30%) = ${buyVerdict.p30?.toFixed(0) ?? "--"}%`}>
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                 {buyVerdict.signals.map(s => {
-                  const barColor = s.score > 0.3 ? "#27AE60" : s.score > 0 ? "#6FCF97" : s.score > -0.3 ? "#F2994A" : "#EB5757";
-                  const barWidth = Math.abs(s.score) * 50;
-                  const isPositive = s.score >= 0;
+                  const pp = s.pp ?? 0;
+                  const barColor = pp > 8 ? "#27AE60" : pp > 0 ? "#6FCF97" : pp > -8 ? "#F2994A" : "#EB5757";
+                  const barWidth = Math.min(Math.abs(pp) * 3, 50);
+                  const isPositive = pp >= 0;
                   return (
                     <div key={s.name}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 3 }}>
                         <div>
                           <span style={{ fontSize: 12, color: "#37352F", fontWeight: 500 }}>{s.name}</span>
-                          <span style={{ fontSize: 10, color: "#BFBFBA", marginLeft: 6 }}>{s.weight}%</span>
+                          <span style={{ fontSize: 10, color: isPositive ? "#27AE60" : "#EB5757", marginLeft: 6, fontFamily: "'DM Mono', monospace" }}>
+                            {pp > 0 ? "+" : ""}{pp}pp
+                          </span>
                         </div>
                         <span style={{ fontSize: 11, color: "#9B9A97" }}>{s.detail}</span>
                       </div>
@@ -2717,8 +2769,8 @@ export default function MMARDashboard() {
                   );
                 })}
               </div>
-              <div style={{ fontSize: 11, color: "#BFBFBA", marginTop: 10 }}>
-                Each bar shows the signal's contribution (right = bullish, left = bearish)
+              <div style={{ marginTop: 12, padding: "8px 12px", background: "#F7F6F3", borderRadius: 6, fontSize: 11, color: "#9B9A97", lineHeight: 1.6 }}>
+                Each bar shows the marginal contribution to P(retorno &gt; 30% en 12m), in percentage points. Floor break risk: {buyVerdict.pFloor?.toFixed(1) ?? "--"}% of paths · P(no loss 1Y): {buyVerdict.pPos?.toFixed(0) ?? "--"}%
               </div>
             </Toggle>
 
@@ -3286,7 +3338,7 @@ export default function MMARDashboard() {
 
           <Toggle label="Monte Carlo Simulation — 3 Years" open={openSections.mc3y_chart} onToggle={() => toggleSection("mc3y_chart")}>
             <p style={{ fontSize: 13, color: "#6B6B6B", lineHeight: 1.6, margin: "0 0 14px" }}>
-              Longer-horizon simulation covering a full cycle. Same 500-path MMAR engine extended to 3 years.
+              Longer-horizon simulation covering a full cycle. Same 2,000-path MMAR engine extended to 3 years.
             </p>
             <div className="grid-mc-stats">
               {[
@@ -3881,7 +3933,7 @@ export default function MMARDashboard() {
               <p style={{ margin: "0 0 12px" }}><strong style={{ color: "#37352F" }}>Step 1 — Power Law fit.</strong> We fit the price-vs-time curve using Weighted Least Squares (recent liquid-market data weighs more than early thin-market data). Separately, a RANSAC robust fit runs 200 iterations to find the support floor, automatically excluding bubble peaks.</p>
               <p style={{ margin: "0 0 12px" }}><strong style={{ color: "#37352F" }}>Step 2 — Fractal calibration.</strong> Using the last ~4 years of data (a rolling window), we measure trend persistence (Hurst exponent) and volatility clustering (intermittency). These adapt automatically as new data arrives.</p>
               <p style={{ margin: "0 0 12px" }}><strong style={{ color: "#37352F" }}>Step 3 — Regime detection.</strong> The market is classified into calm and volatile regimes, each with its own mean-reversion speed. Calm markets correct toward fair value faster; volatile markets let deviations persist longer.</p>
-              <p style={{ margin: "0 0 12px" }}><strong style={{ color: "#37352F" }}>Step 4 — Monte Carlo simulation.</strong> 500 paths are generated using fractal volatility clustering, shocks from Bitcoin's actual historical returns (not a bell curve), Hurst-correlated momentum, regime-switching, and a reflecting barrier at the support floor.</p>
+              <p style={{ margin: "0 0 12px" }}><strong style={{ color: "#37352F" }}>Step 4 — Monte Carlo simulation.</strong> 2,000 paths are generated using fractal volatility clustering, shocks from Bitcoin's actual historical returns (not a bell curve), Hurst-correlated momentum, regime-switching, and a reflecting barrier at the support floor.</p>
               <p style={{ margin: "0 0 0" }}><strong style={{ color: "#37352F" }}>Step 5 — Scoring.</strong> Seven signals are combined: valuation (including distance to support), risk/reward, loss probability, episode timing, market regime, volatility conditions, and trend persistence. The result is YES (Strong Buy or Buy) or NO (Hold, Wait, or Sell). Everything refits on every page load.</p>
             </div>
           </Toggle>
@@ -3933,7 +3985,7 @@ export default function MMARDashboard() {
             <div style={{ fontSize: 14, color: "#4F4F4F", lineHeight: 1.8 }}>
               <p style={{ margin: "0 0 12px" }}><strong style={{ color: "#37352F" }}>Not a price prediction.</strong> The model gives probabilities, not a single number. "Fair value in a year is $148k" means the trajectory points there — not that it will arrive.</p>
               <p style={{ margin: "0 0 12px" }}><strong style={{ color: "#37352F" }}>Not a trading signal.</strong> The YES/NO assumes you hold for at least 1 year. For day-trading, this tool is useless.</p>
-              <p style={{ margin: "0 0 12px" }}><strong style={{ color: "#37352F" }}>Not a guarantee.</strong> 500 simulations show plausible futures, not all possible futures. A black swan lives outside the model.</p>
+              <p style={{ margin: "0 0 12px" }}><strong style={{ color: "#37352F" }}>Not a guarantee.</strong> 2,000 simulations show plausible futures, not all possible futures. A black swan lives outside the model.</p>
               <p style={{ margin: "0 0 0" }}><strong style={{ color: "#37352F" }}>Don't invest money you can't lose.</strong> Even at "Strong Buy" with all signals green, catastrophic loss is possible. Bitcoin is volatile, non-sovereign, and uninsured.</p>
             </div>
           </Toggle>
@@ -3969,7 +4021,7 @@ export default function MMARDashboard() {
             <div>
               <div style={{ fontSize: 10, color: "#BFBFBA", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600, marginBottom: 8 }}>Methodology</div>
               <p style={{ fontSize: 12, color: "#9B9A97", lineHeight: 1.7, margin: 0 }}>
-                Santostasi Power Law (WLS) + Mandelbrot MMAR (fractal cascades, DFA) + Regime-Switching Ornstein-Uhlenbeck + 500-path Monte Carlo with empirical resampling.
+                Santostasi Power Law (WLS) + Mandelbrot MMAR (fractal cascades, DFA) + Regime-Switching Ornstein-Uhlenbeck + 2,000-path Monte Carlo with empirical resampling.
               </p>
             </div>
             <div>
