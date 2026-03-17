@@ -758,6 +758,15 @@ function runWalkForwardBacktest(prices, a, b, resMean, resStd, resFloor, evtCap,
   const levelOf = (r, i, bubbleSig = 1.0, reduceSig = 0.5) => {
     if (r.sig > bubbleSig)  return "sell";
     if (r.sig > reduceSig)  return "reduce";
+
+    // Override estructural: la tabla de calibración muestra 0% de loss rate
+    // para σ < -0.5. El modelo debe disparar siempre en descuento estructural,
+    // independientemente de lo que diga el MC (que en bear markets proyecta
+    // caídas adicionales por H=0.65, subestimando el valor del descuento).
+    if (r.sig < -1.0) return "strongBuy"; // descuento profundo — históricamente 0% pérdida
+    if (r.sig < -0.5) return "buy";       // descuento estructural — históricamente 0% pérdida
+
+    // Zona neutral: usar el score continuo calibrado
     if (isYes(r, i)) {
       if (isStrongBuy(r, i)) return "strongBuy";
       return "buy";
@@ -3343,8 +3352,12 @@ export default function MMARDashboard() {
 
     // Umbrales del score: Strong Buy = top 40% de YES históricos, Buy = score > 0
     const strongScoreThresh = sp?.strongThresh || 1;
-    const isStrongBuy = buyScore >= strongScoreThresh;
-    const isBuy       = buyScore > 0 && !isStrongBuy;
+    // Override estructural: σ < -0.5 siempre dispara buy independientemente del MC
+    // (consistente con levelOf del backtest — 0% loss rate histórico en descuento)
+    const isStructuralDiscount = sig < -0.5;
+    const isDeepDiscount       = sig < -1.0;
+    const isStrongBuy = isDeepDiscount  || buyScore >= strongScoreThresh;
+    const isBuy       = (!isStrongBuy && isStructuralDiscount) || (buyScore > 0 && !isStrongBuy);
 
     // ── Índice de divergencia Hurst (señal de venta — ruta 1) ──
     const sellThr = backtestResults?.sellThresholds || { sigmaDelta: 0.10, hDelta: -0.03, volRatio: 1.15 };
