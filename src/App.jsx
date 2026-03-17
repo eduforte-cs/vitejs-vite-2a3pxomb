@@ -925,7 +925,8 @@ function runWalkForwardBacktest(prices, a, b, resMean, resStd, resFloor, evtCap,
 
   const sellBacktest = sellResults.length >= 3 ? {
     thresholds: bestSellThresholds,
-    metrics: bestSellMetrics ? (() => {
+    metrics: (() => {
+      // Usar los mejores thresholds encontrados, o los defaults si el grid search no convergió
       const sdT = bestSellThresholds.sigmaDelta;
       const hdT = bestSellThresholds.hDelta;
       const vrT = bestSellThresholds.volRatio;
@@ -936,27 +937,27 @@ function runWalkForwardBacktest(prices, a, b, resMean, resStd, resFloor, evtCap,
 
       const sell3    = sellResults.filter(r => scoreF(r) === 3);
       const sell2    = sellResults.filter(r => scoreF(r) === 2);
-      const noSignal = sellResults.filter(r => scoreF(r) <= 1); // overheated sin divergencias
+      const noSignal = sellResults.filter(r => scoreF(r) <= 1);
 
       const maxDrawdown = arr => arr.length > 0 ? +Math.min(...arr.map(r => r.ret6m)).toFixed(1) : null;
       const avgRet      = arr => arr.length > 0 ? +(arr.reduce((s,r)=>s+r.ret6m,0)/arr.length).toFixed(1) : null;
       const pct20       = arr => arr.length > 0 ? +(arr.filter(r=>r.isGoodSell).length/arr.length*100).toFixed(1) : null;
+      const precFn      = arr => arr.length > 0 ? +(arr.filter(r=>r.isGoodSell).length/arr.length*100).toFixed(1) : null;
 
-      // Delta: diferencia entre Sell y baseline — cuánto añade la señal
-      const sellAvg    = avgRet(sell3);
-      const baseAvg    = avgRet(sellResults); // todos los overheated
+      const sellAvg  = avgRet(sell3);
+      const baseAvg  = avgRet(sellResults);
       const signalDelta = (sellAvg != null && baseAvg != null)
-        ? +(baseAvg - sellAvg).toFixed(1) // positivo = sell tuvo peores retornos que baseline
+        ? +(baseAvg - sellAvg).toFixed(1)
         : null;
 
       return {
-        ...bestSellMetrics,
-        sell:      { ...bestSellMetrics.sell,   maxDrawdown: maxDrawdown(sell3), pct20: pct20(sell3)    },
-        reduce:    { ...bestSellMetrics.reduce, maxDrawdown: maxDrawdown(sell2), pct20: pct20(sell2)    },
-        noSignal:  { n: noSignal.length, avgRet6m: avgRet(noSignal), maxDrawdown: maxDrawdown(noSignal), pct20: pct20(noSignal) },
-        signalDelta, // pp que el sell underperformó vs baseline (positivo = señal útil)
+        sell:       { n: sell3.length,    precision: precFn(sell3),    avgRet6m: avgRet(sell3),    maxDrawdown: maxDrawdown(sell3),    pct20: pct20(sell3)    },
+        reduce:     { n: sell2.length,    precision: precFn(sell2),    avgRet6m: avgRet(sell2),    maxDrawdown: maxDrawdown(sell2),    pct20: pct20(sell2)    },
+        noSignal:   { n: noSignal.length, precision: precFn(noSignal), avgRet6m: avgRet(noSignal), maxDrawdown: maxDrawdown(noSignal), pct20: pct20(noSignal) },
+        allOverheat:{ n: sellResults.length, precision: precFn(sellResults), avgRet6m: avgRet(sellResults), maxDrawdown: maxDrawdown(sellResults), pct20: pct20(sellResults) },
+        signalDelta,
       };
-    })() : null,
+    })(),
     nOverheat: sellResults.length,
     note: sellResults.length < 10 ? "Small sample — interpret with caution." : null,
   } : null;
