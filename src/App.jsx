@@ -3262,15 +3262,79 @@ export default function MMARDashboard() {
     }
     paras.push(`Your chance of being at a loss after 1 year: ~${l1y.toFixed(0)}%. After 3 years: ~${l3y.toFixed(0)}%.${l3y < 5 ? " Time is on your side." : l3y < 15 ? " The longer you hold, the better the odds." : ""}`);
 
+    // P(llega al fair value en 3Y) — mismo approach que pFV pero sobre percentiles3y
+    const pFV3y = Math.max(0, Math.min(100, (() => {
+      const target = pl3yFuture;
+      const row = percentiles3y[percentiles3y.length - 1];
+      if (!row) return 50;
+      const pts = [{price:row.p5,prob:5},{price:row.p25,prob:25},{price:row.p50,prob:50},{price:row.p75,prob:75},{price:row.p95,prob:95}];
+      if (target <= pts[0].price) return 97.5;
+      if (target >= pts[4].price) return 2.5;
+      for (let k = 0; k < pts.length - 1; k++) {
+        if (target >= pts[k].price && target <= pts[k+1].price) {
+          const t = (target - pts[k].price) / (pts[k+1].price - pts[k].price);
+          return 100 - (pts[k].prob + t * (pts[k+1].prob - pts[k].prob));
+        }
+      }
+      return 50;
+    })()));
+
+    // Veredicto de 3Y — mismo score continuo pero usando métricas de 3 años
+    let verdict3y = "Hold";
+    let verdict3yColor = "#E8A838";
+    if (sp && calibratedWeights) {
+      const f1_3y = -(sig - sp.sigMean);                   // mismo descuento
+      const f2_3y = sp.lossMean - l3y;                     // pLoss a 3Y
+      const f3_3y = pFV3y - sp.fvMean;                    // pFV a 3Y
+      const f4_3y = sp.floorMean - pFloor;                 // mismo floor
+      const w = calibratedWeights;
+      const score3y = (w.w1*f1_3y + w.w2*f2_3y + w.w3*f3_3y + w.w4*f4_3y) * (isVolatile ? 0.75 : 1);
+      if (score3y >= sp.strongThresh * 1.2) { verdict3y = "Strong Buy"; verdict3yColor = "#1B8A4A"; }
+      else if (score3y >= sp.strongThresh)  { verdict3y = "Buy";        verdict3yColor = "#27AE60"; }
+      else if (score3y > 0)                 { verdict3y = "Buy";        verdict3yColor = "#27AE60"; }
+      else if (isSellSignal)                { verdict3y = "Sell";       verdict3yColor = "#EB5757"; }
+      else if (isWaitSellSign)              { verdict3y = "Reduce";     verdict3yColor = "#F2994A"; }
+    }
+
+    // Datos para las dos tarjetas de horizonte
+    const horizonCards = [
+      {
+        horizon: "1 year",
+        plTarget: pl1yFutureLocal,
+        plReturn: ((pl1yFutureLocal - S0) / S0 * 100),
+        pProfit: pPos1y,
+        pLoss: l1y,
+        pFairValue: pFV,
+        worstCase: supportPrice,
+        verdict: subtitle,
+        verdictColor: subtitleColor,
+        answer,
+        answerColor,
+      },
+      {
+        horizon: "3 years",
+        plTarget: pl3yFuture,
+        plReturn: pl3yReturn,
+        pProfit: pPos3y,
+        pLoss: l3y,
+        pFairValue: pFV3y,
+        worstCase: supportPrice, // mismo floor estructural
+        verdict: verdict3y,
+        verdictColor: verdict3yColor,
+        answer: verdict3y === "Sell" || verdict3y === "Reduce" || verdict3y === "Hold" || verdict3y === "Wait" ? "NO" : "YES",
+        answerColor: verdict3y === "Strong Buy" || verdict3y === "Buy" ? "#27AE60" : verdict3y === "Sell" ? "#EB5757" : "#F2994A",
+      },
+    ];
+
     const composite = (pFV - 50) / 50;
     return {
       answer, answerColor, answerSub, subtitle, subtitleColor,
       composite, confidence, paras,
       plSignals, mcSignals,
-      pFV, pPos1y, pPos3y, pFloor, l1y, l3y,
+      pFV, pFV3y, pPos1y, pPos3y, pFloor, l1y, l3y,
       nCondsMet, thr: { sig: thr.sig, pLoss: thr.pLoss1y, pFV: thr.pFV },
       buyScore: +buyScore.toFixed(3),
-      p30CI, hurstDiv,
+      p30CI, hurstDiv, horizonCards,
     };
   }
 
@@ -3414,7 +3478,7 @@ export default function MMARDashboard() {
           <Toggle label="💬 The short answer" open={openSections.shouldbuy} onToggle={() => toggleSection("shouldbuy")}>
 
             {/* YES / NO */}
-            <div style={{ padding: "24px 0 20px", textAlign: "center" }}>
+            <div style={{ padding: "24px 0 16px", textAlign: "center" }}>
               <div style={{ fontSize: 56, fontWeight: 800, color: buyVerdict.answerColor, letterSpacing: "-0.03em", lineHeight: 1, fontFamily: "'DM Sans', sans-serif" }}>
                 {buyVerdict.answer}
               </div>
@@ -3429,6 +3493,66 @@ export default function MMARDashboard() {
                 {buyVerdict.thr ? <span> · Thresholds calibrated by backtest</span> : null}
               </div>
             </div>
+
+            {/* ── Horizon cards: 1Y vs 3Y ── */}
+            {buyVerdict.horizonCards && (
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 20 }}>
+                {buyVerdict.horizonCards.map(card => (
+                  <div key={card.horizon} style={{
+                    background: "#FAFAF8", borderRadius: 10,
+                    border: `1.5px solid ${card.answer === "YES" ? "#C3E6CB" : "#E8E5E0"}`,
+                    padding: "16px 16px 14px",
+                  }}>
+                    {/* Header */}
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14 }}>
+                      <div style={{ fontSize: 11, color: "#9B9A97", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em" }}>
+                        If you hold {card.horizon}
+                      </div>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: card.verdictColor, background: `${card.verdictColor}15`, padding: "2px 8px", borderRadius: 4 }}>
+                        {card.verdict}
+                      </div>
+                    </div>
+
+                    {/* PL target */}
+                    <div style={{ marginBottom: 12, paddingBottom: 12, borderBottom: "1px solid #F1F1EF" }}>
+                      <div style={{ fontSize: 10, color: "#BFBFBA", marginBottom: 3 }}>Power Law target</div>
+                      <div style={{ fontSize: 20, fontWeight: 700, color: "#37352F", fontFamily: "'DM Mono', monospace", lineHeight: 1 }}>
+                        ${fmtK(card.plTarget)}
+                      </div>
+                      <div style={{ fontSize: 12, color: card.plReturn > 0 ? "#27AE60" : "#EB5757", marginTop: 2 }}>
+                        {card.plReturn > 0 ? "+" : ""}{card.plReturn.toFixed(0)}% from today
+                      </div>
+                    </div>
+
+                    {/* MC probabilities */}
+                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                      {[
+                        { label: "P(any profit)", value: `${card.pProfit.toFixed(0)}%`, good: card.pProfit > 70 },
+                        { label: "P(loss)",       value: `${card.pLoss.toFixed(0)}%`,   good: card.pLoss < 20 },
+                        { label: "P(reach FV)",   value: `${card.pFairValue.toFixed(0)}%`, good: card.pFairValue > 50 },
+                      ].map(({ label, value, good }) => (
+                        <div key={label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                          <span style={{ fontSize: 12, color: "#9B9A97" }}>{label}</span>
+                          <span style={{ fontSize: 13, fontWeight: 600, fontFamily: "'DM Mono', monospace", color: good ? "#27AE60" : "#EB5757" }}>
+                            {value}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Worst case */}
+                    <div style={{ marginTop: 12, paddingTop: 10, borderTop: "1px solid #F1F1EF" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <span style={{ fontSize: 11, color: "#BFBFBA" }}>Structural floor (RANSAC)</span>
+                        <span style={{ fontSize: 12, fontWeight: 600, fontFamily: "'DM Mono', monospace", color: "#9B9A97" }}>
+                          ${fmtK(card.worstCase)}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
 
             {/* Signal breakdown — dos secciones */}
             <Toggle label="What's driving this" open={openSections.drivers} onToggle={() => toggleSection("drivers")} count={`${buyVerdict.nCondsMet}/4`}>
