@@ -3523,7 +3523,7 @@ export default function MMARDashboard() {
                     <div style={{ marginBottom: 12, paddingBottom: 12, borderBottom: "1px solid #F1F1EF" }}>
                       <div style={{ fontSize: 10, color: "#BFBFBA", marginBottom: 3 }}>Fair value ({card.horizon})</div>
                       <div style={{ fontSize: 20, fontWeight: 700, color: "#37352F", fontFamily: "'DM Mono', monospace", lineHeight: 1 }}>
-                        ${fmtK(card.plTarget)}
+                        {fmtK(card.plTarget)}
                       </div>
                       <div style={{ fontSize: 12, color: card.plReturn > 0 ? "#27AE60" : "#EB5757", marginTop: 2 }}>
                         {card.plReturn > 0 ? "+" : ""}{card.plReturn.toFixed(0)}% from today
@@ -3551,7 +3551,7 @@ export default function MMARDashboard() {
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                         <span style={{ fontSize: 11, color: "#BFBFBA" }}>Worst case floor</span>
                         <span style={{ fontSize: 12, fontWeight: 600, fontFamily: "'DM Mono', monospace", color: "#9B9A97" }}>
-                          ${fmtK(card.worstCase)}
+                          {fmtK(card.worstCase)}
                         </span>
                       </div>
                     </div>
@@ -3708,7 +3708,7 @@ export default function MMARDashboard() {
         {/* ═══ MODEL VALIDATION ═══ */}
         {backtestResults?.precision != null && (
           <div style={{ marginTop: 4 }}>
-            <Toggle label="✅ Model validation" open={openSections.validation} onToggle={() => toggleSection("validation")}>
+            <Toggle label="📊 Has this worked in the past?" open={openSections.validation} onToggle={() => toggleSection("validation")}>
 
               {/* ── Headline en lenguaje llano ── */}
               <div style={{ background: "#F7F6F3", borderRadius: 8, padding: "16px 18px", marginBottom: 16 }}>
@@ -3723,26 +3723,26 @@ export default function MMARDashboard() {
                     return (
                       <>
                         <p style={{ margin: "0 0 10px" }}>
-                          When the model said <strong>YES</strong> historically, it was right <strong style={{ color: p > 70 ? "#27AE60" : p > 55 ? "#F2994A" : "#EB5757" }}>{p}% of the time</strong> — meaning the price was higher 12 months later.
+                          We tested this signal against every point in Bitcoin's history since 2016. When the model said <strong>buy</strong>, the price was higher 12 months later <strong style={{ color: p > 70 ? "#27AE60" : p > 55 ? "#F2994A" : "#EB5757" }}>{p}% of the time</strong>.
                           {br != null && diff != null && (
-                            <span style={{ color: "#9B9A97" }}> Bitcoin rises in {br}% of all 12-month periods regardless of signal, so the model adds <strong style={{ color: diff > 0 ? "#27AE60" : "#EB5757" }}>{diff > 0 ? "+" : ""}{diff}pp</strong> above that baseline.</span>
+                            <span style={{ color: "#9B9A97" }}> For context, Bitcoin goes up in any random 12-month period {br}% of the time — so the signal adds <strong style={{ color: diff > 0 ? "#27AE60" : "#EB5757" }}>{diff > 0 ? "+" : ""}{diff} percentage points</strong> on top of that.</span>
                           )}
                         </p>
-                        {calibratedWeights && (
-                          <p style={{ margin: "0 0 10px" }}>
-                            Calibrated weights — how much each factor matters: discount depth <strong style={{ color: "#37352F" }}>×{calibratedWeights.w1}</strong>, loss risk <strong style={{ color: "#37352F" }}>×{calibratedWeights.w2}</strong>, fair value probability <strong style={{ color: "#37352F" }}>×{calibratedWeights.w3}</strong>, floor safety <strong style={{ color: "#37352F" }}>×{calibratedWeights.w4}</strong>.
-                            {calibratedWeights.w2 > calibratedWeights.w1 && <span style={{ color: "#9B9A97" }}> Loss risk outweighs discount — the model can say YES even with moderate discount if risk is very low.</span>}
-                          </p>
-                        )}
                         {avgY != null && avgN != null && (
                           <p style={{ margin: "0 0 10px" }}>
-                            Average 12-month return after a YES signal: <strong style={{ color: "#27AE60" }}>+{avgY}%</strong>. After a NO signal: <strong style={{ color: avgN > 0 ? "#9B9A97" : "#EB5757" }}>{avgN > 0 ? "+" : ""}{avgN}%</strong>.
+                            When the model said <strong>buy</strong>, the average 12-month return was <strong style={{ color: "#27AE60" }}>+{avgY}%</strong>. When it said <strong>no</strong>, the average was <strong style={{ color: avgN > 0 ? "#9B9A97" : "#EB5757" }}>{avgN > 0 ? "+" : ""}{avgN}%</strong>.
+                          </p>
+                        )}
+                        {calibratedWeights && (
+                          <p style={{ margin: "0 0 10px", color: "#9B9A97", fontSize: 13 }}>
+                            The model weighs four factors: how cheap Bitcoin is (×{calibratedWeights.w1}), how unlikely a loss is (×{calibratedWeights.w2}), how likely it is to reach fair value (×{calibratedWeights.w3}), and how far it is from the worst case floor (×{calibratedWeights.w4}). These weights came from the historical data, not from us.
+                            {calibratedWeights.w2 > calibratedWeights.w1 && <span> The risk factor matters more than the discount — which means the model can say buy even when Bitcoin isn't deeply cheap, if the risk is very low.</span>}
                           </p>
                         )}
                         <p style={{ margin: 0, color: "#9B9A97", fontSize: 13 }}>
                           {stable
-                            ? "✓ The signal held up consistently across different market cycles — it's not tuned to a single period."
-                            : "⚠ Performance varied across cycles — treat the signal as one input, not as a guarantee."}
+                            ? "✓ The signal worked consistently across all Bitcoin market cycles — it's not just tuned to one good period."
+                            : "⚠ Performance varied across different market cycles — treat this as a guide, not a guarantee."}
                         </p>
                       </>
                     );
@@ -3750,16 +3750,16 @@ export default function MMARDashboard() {
                 </div>
               </div>
 
-              {/* ── Detalles técnicos — colapsados ── */}
-              <Toggle label="Technical details" open={openSections.validationDetails} onToggle={() => toggleSection("validationDetails")}>
+              {/* ── Detalles para quien quiere profundizar ── */}
+              <Toggle label="Show detailed numbers" open={openSections.validationDetails} onToggle={() => toggleSection("validationDetails")}>
 
                 {/* Métricas principales */}
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 10, marginBottom: 14 }}>
                   {[
-                    { label: "YES precision", value: `${backtestResults.precision}%`, desc: "YES signals that were right", color: backtestResults.precision > 60 ? "#27AE60" : "#F2994A" },
-                    { label: "Avg return YES", value: `+${backtestResults.avgReturnYes}%`, desc: "Mean 12m return when YES", color: "#27AE60" },
-                    { label: "Avg return NO", value: `${backtestResults.avgReturnNo > 0 ? "+" : ""}${backtestResults.avgReturnNo}%`, desc: "Mean 12m return when NO", color: "#9B9A97" },
-                    { label: "Observations", value: `${backtestResults.nYes + backtestResults.nNo}`, desc: `${backtestResults.nYes} YES · ${backtestResults.nNo} NO`, color: "#9B9A97" },
+                    { label: "Buy accuracy", value: `${backtestResults.precision}%`, desc: "Buy signals that were right", color: backtestResults.precision > 60 ? "#27AE60" : "#F2994A" },
+                    { label: "Return when buy", value: `+${backtestResults.avgReturnYes}%`, desc: "Avg 12m return after buy signal", color: "#27AE60" },
+                    { label: "Return when no", value: `${backtestResults.avgReturnNo > 0 ? "+" : ""}${backtestResults.avgReturnNo}%`, desc: "Avg 12m return after no signal", color: "#9B9A97" },
+                    { label: "Data points", value: `${backtestResults.nYes + backtestResults.nNo}`, desc: `${backtestResults.nYes} buy · ${backtestResults.nNo} no`, color: "#9B9A97" },
                   ].map(({ label, value, desc, color }) => (
                     <div key={label} style={{ background: "#FAFAF8", borderRadius: 6, border: "1px solid #E8E5E0", padding: "10px 12px" }}>
                       <div style={{ fontSize: 10, color: "#9B9A97", marginBottom: 3 }}>{label}</div>
@@ -3771,30 +3771,33 @@ export default function MMARDashboard() {
 
                 {/* Thresholds calibrados */}
                 {calibratedThresholds && (
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginBottom: 12 }}>
-                    {[
-                      { label: "σ threshold", value: `< ${calibratedThresholds.sig}σ`, desc: "Discount required" },
-                      { label: "Max P(loss 1Y)", value: `< ${calibratedThresholds.pLoss1y}%`, desc: "Max loss probability" },
-                      { label: "Min P(fair value)", value: `> ${calibratedThresholds.pFV}%`, desc: "FV reachable in 12m" },
-                    ].map(({ label, value, desc }) => (
-                      <div key={label} style={{ background: "#F0F8F0", borderRadius: 6, border: "1px solid #C3E6CB", padding: "8px 10px" }}>
-                        <div style={{ fontSize: 10, color: "#9B9A97", marginBottom: 2 }}>{label}</div>
-                        <div style={{ fontSize: 13, fontWeight: 600, color: "#27AE60", fontFamily: "'DM Mono', monospace" }}>{value}</div>
-                        <div style={{ fontSize: 10, color: "#BFBFBA" }}>{desc}</div>
-                      </div>
-                    ))}
+                  <div style={{ marginBottom: 12 }}>
+                    <div style={{ fontSize: 10, color: "#BFBFBA", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600, marginBottom: 8 }}>Signal thresholds — auto-calibrated</div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 }}>
+                      {[
+                        { label: "Max price premium", value: `< ${calibratedThresholds.sig}σ`, desc: "How expensive Bitcoin can be" },
+                        { label: "Max loss chance", value: `< ${calibratedThresholds.pLoss1y}%`, desc: "Max acceptable loss probability" },
+                        { label: "Min fair value chance", value: `> ${calibratedThresholds.pFV}%`, desc: "Min probability of reaching target" },
+                      ].map(({ label, value, desc }) => (
+                        <div key={label} style={{ background: "#F0F8F0", borderRadius: 6, border: "1px solid #C3E6CB", padding: "8px 10px" }}>
+                          <div style={{ fontSize: 10, color: "#9B9A97", marginBottom: 2 }}>{label}</div>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: "#27AE60", fontFamily: "'DM Mono', monospace" }}>{value}</div>
+                          <div style={{ fontSize: 10, color: "#BFBFBA" }}>{desc}</div>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 )}
 
                 {/* Signal strength breakdown */}
                 {backtestResults.byLevel && (
                   <div style={{ marginBottom: 12 }}>
-                    <div style={{ fontSize: 10, color: "#BFBFBA", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600, marginBottom: 8 }}>Signal strength breakdown</div>
+                    <div style={{ fontSize: 10, color: "#BFBFBA", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600, marginBottom: 8 }}>Results by signal strength</div>
                     <div style={{ border: "1px solid #E8E5E0", borderRadius: 6, overflow: "hidden" }}>
                       <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
                         <thead>
                           <tr style={{ background: "#F7F6F3" }}>
-                            {["Signal", "n", "Precision", "Avg return", "Worst"].map(h => (
+                            {["Signal", "Times seen", "Right", "Avg return", "Worst"].map(h => (
                               <th key={h} style={{ padding: "7px 10px", textAlign: h === "Signal" ? "left" : "right", color: "#9B9A97", fontWeight: 500, fontSize: 11, borderBottom: "1px solid #E8E5E0" }}>{h}</th>
                             ))}
                           </tr>
@@ -3803,7 +3806,7 @@ export default function MMARDashboard() {
                           {[
                             { label: "Strong Buy", key: "strongBuy", color: "#1B8A4A" },
                             { label: "Buy",         key: "buy",       color: "#27AE60" },
-                            { label: "NO",          key: "no",        color: "#9B9A97" },
+                            { label: "No signal",   key: "no",        color: "#9B9A97" },
                           ].map(({ label, key, color }) => {
                             const d = backtestResults.byLevel[key];
                             if (!d || d.n === 0) return null;
@@ -3827,8 +3830,8 @@ export default function MMARDashboard() {
                       </table>
                     </div>
                     <div style={{ fontSize: 11, color: "#BFBFBA", marginTop: 5, lineHeight: 1.5 }}>
-                      Precision = % of signals where price was higher after 12m. Worst = lowest 12m return observed.
-                      {backtestResults.byLevel.strongBuy?.n < 5 && <span style={{ color: "#F2994A" }}> Strong Buy n is small — interpret with caution.</span>}
+                      "Right" = price was higher after 12 months. "Worst" = the worst 12-month return observed after this signal.
+                      {backtestResults.byLevel.strongBuy?.n < 5 && <span style={{ color: "#F2994A" }}> Strong Buy has few historical examples — take it with a grain of salt.</span>}
                     </div>
                   </div>
                 )}
@@ -3836,21 +3839,21 @@ export default function MMARDashboard() {
                 {/* Sell signal validation */}
                 {backtestResults.sellBacktest?.metrics && (
                   <div style={{ marginBottom: 12 }}>
-                    <div style={{ fontSize: 10, color: "#BFBFBA", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600, marginBottom: 8 }}>Sell signal validation — Hurst divergences · 6-month horizon</div>
+                    <div style={{ fontSize: 10, color: "#BFBFBA", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600, marginBottom: 8 }}>Sell warning signal accuracy — 6 months after signal</div>
                     <div style={{ border: "1px solid #E8E5E0", borderRadius: 6, overflow: "hidden" }}>
                       <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
                         <thead>
                           <tr style={{ background: "#F7F6F3" }}>
-                            {["Signal", "n", "Precision", "Avg 6m", "Worst 6m"].map(h => (
+                            {["Signal", "Times seen", "Fell >20%", "Avg return", "Worst"].map(h => (
                               <th key={h} style={{ padding: "7px 10px", textAlign: h === "Signal" ? "left" : "right", color: "#9B9A97", fontWeight: 500, fontSize: 11, borderBottom: "1px solid #E8E5E0" }}>{h}</th>
                             ))}
                           </tr>
                         </thead>
                         <tbody>
                           {[
-                            { label: "Sell (3 diverg.)",   data: backtestResults.sellBacktest.metrics.sell,        color: "#EB5757" },
-                            { label: "Reduce (2 diverg.)", data: backtestResults.sellBacktest.metrics.reduce,      color: "#F2994A" },
-                            { label: "All overheated",     data: backtestResults.sellBacktest.metrics.allOverheat, color: "#9B9A97" },
+                            { label: "Sell (3 warnings)",  data: backtestResults.sellBacktest.metrics.sell,        color: "#EB5757" },
+                            { label: "Reduce (2 warnings)", data: backtestResults.sellBacktest.metrics.reduce,      color: "#F2994A" },
+                            { label: "No warning (base)",   data: backtestResults.sellBacktest.metrics.allOverheat, color: "#9B9A97" },
                           ].map(({ label, data, color }) => {
                             if (!data || data.n === 0) return null;
                             return (
@@ -3873,9 +3876,8 @@ export default function MMARDashboard() {
                       </table>
                     </div>
                     <div style={{ fontSize: 11, color: "#BFBFBA", marginTop: 5, lineHeight: 1.5 }}>
-                      Precision = % of signals where price fell &gt;20% within 6 months.
+                      "Fell &gt;20%" = percentage of times Bitcoin dropped more than 20% within 6 months of the signal.
                       {backtestResults.sellBacktest.note && <span style={{ color: "#F2994A" }}> {backtestResults.sellBacktest.note}</span>}
-                      {backtestResults.sellThresholds && <span> · σΔ &gt; {backtestResults.sellThresholds.sigmaDelta} · HΔ &lt; {backtestResults.sellThresholds.hDelta} · vol ratio &gt; {backtestResults.sellThresholds.volRatio}</span>}
                     </div>
                   </div>
                 )}
@@ -3883,12 +3885,12 @@ export default function MMARDashboard() {
                 {/* Cross-validation por ciclos */}
                 {backtestResults.crossValidation?.length > 0 && (
                   <div style={{ marginBottom: 12 }}>
-                    <div style={{ fontSize: 10, color: "#BFBFBA", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600, marginBottom: 8 }}>Cross-validation by cycle — threshold stability</div>
+                    <div style={{ fontSize: 10, color: "#BFBFBA", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600, marginBottom: 8 }}>Did it work across different market eras?</div>
                     <div style={{ border: "1px solid #E8E5E0", borderRadius: 6, overflow: "hidden" }}>
                       <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
                         <thead>
                           <tr style={{ background: "#F7F6F3" }}>
-                            {["Period", "n obs", "YES", "Precision", "Avg return"].map(h => (
+                            {["Period", "Data points", "Buy signals", "Accuracy", "Avg return"].map(h => (
                               <th key={h} style={{ padding: "7px 10px", textAlign: h === "Period" ? "left" : "right", color: "#9B9A97", fontWeight: 500, fontSize: 11, borderBottom: "1px solid #E8E5E0" }}>{h}</th>
                             ))}
                           </tr>
@@ -3913,8 +3915,8 @@ export default function MMARDashboard() {
                     {backtestResults.stabilityDelta != null && (
                       <div style={{ fontSize: 11, marginTop: 5, lineHeight: 1.5, color: backtestResults.stabilityDelta < 15 ? "#27AE60" : "#F2994A" }}>
                         {backtestResults.stabilityDelta < 15
-                          ? `✓ Stable across cycles (max spread: ${backtestResults.stabilityDelta}pp).`
-                          : `⚠ Precision varies ${backtestResults.stabilityDelta}pp across cycles — thresholds may be partially overfit.`}
+                          ? `✓ Consistent across all periods (accuracy varied by only ${backtestResults.stabilityDelta}pp).`
+                          : `⚠ Accuracy varied by ${backtestResults.stabilityDelta}pp across periods — the model works better in some eras than others.`}
                       </div>
                     )}
                   </div>
@@ -3923,11 +3925,11 @@ export default function MMARDashboard() {
                 {/* Régimen */}
                 {backtestResults.regimeEffect?.delta != null && (
                   <div style={{ marginBottom: 12 }}>
-                    <div style={{ fontSize: 10, color: "#BFBFBA", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600, marginBottom: 8 }}>Does regime matter? — YES signal by regime</div>
+                    <div style={{ fontSize: 10, color: "#BFBFBA", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600, marginBottom: 8 }}>Does market turbulence affect accuracy?</div>
                     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                       {[
-                        { label: "Calm regime",     data: backtestResults.regimeEffect.calm,     color: "#27AE60" },
-                        { label: "Volatile regime", data: backtestResults.regimeEffect.volatile, color: "#F2994A" },
+                        { label: "Calm markets",     data: backtestResults.regimeEffect.calm,     color: "#27AE60" },
+                        { label: "Turbulent markets", data: backtestResults.regimeEffect.volatile, color: "#F2994A" },
                       ].map(({ label, data, color }) => (
                         <div key={label} style={{ background: "#FAFAF8", borderRadius: 6, border: "1px solid #E8E5E0", padding: "10px 12px" }}>
                           <div style={{ fontSize: 11, color: "#9B9A97", marginBottom: 6 }}>{label}</div>
@@ -3935,30 +3937,30 @@ export default function MMARDashboard() {
                             {data.avgReturn != null ? `+${data.avgReturn}%` : "—"}
                           </div>
                           <div style={{ fontSize: 11, color: "#BFBFBA", marginTop: 2 }}>
-                            avg return YES · precision: {data.precisionYes ?? "—"}% · n={data.nYes}
+                            avg return · accuracy: {data.precisionYes ?? "—"}% · {data.nYes} signals
                           </div>
                         </div>
                       ))}
                     </div>
                     <div style={{ fontSize: 11, color: "#9B9A97", marginTop: 8, padding: "8px 10px", background: "#F7F6F3", borderRadius: 6 }}>
                       {Math.abs(backtestResults.regimeEffect.delta) > 10
-                        ? `Regime has meaningful predictive power — calm YES signals outperformed volatile YES by ${Math.abs(backtestResults.regimeEffect.delta)}pp. Tighter thresholds in volatile regimes are justified.`
-                        : `Regime shows limited predictive power (${Math.abs(backtestResults.regimeEffect.delta)}pp difference). The tighter volatile thresholds act as a conservative buffer.`}
+                        ? `Buy signals in calm markets outperformed turbulent ones by ${Math.abs(backtestResults.regimeEffect.delta)}pp — the model applies tighter criteria during turbulent periods.`
+                        : `The signal performs similarly in calm and turbulent markets (${Math.abs(backtestResults.regimeEffect.delta)}pp difference).`}
                     </div>
                   </div>
                 )}
 
                 {/* Nota metodológica */}
                 <div style={{ fontSize: 11, color: "#9B9A97", lineHeight: 1.7, padding: "10px 12px", background: "#F7F6F3", borderRadius: 6 }}>
-                  Walk-forward backtest from 2016 to present — every 30 days, computing P(loss 1Y) and P(reaches fair value) at the historical price vs actual outcome. "Good buy" = no loss after 12 months.
-                  {backtestResults.baseRate != null && <span> Bitcoin's historical base rate of positive 12-month returns: <strong style={{ color: "#37352F" }}>{backtestResults.baseRate}%</strong> — evaluate YES precision against this baseline.</span>}
-                  <span style={{ color: "#BFBFBA" }}> · H and λ² fixed at full-period means for computational feasibility.</span>
+                  Tested on every 30-day point from 2016 to today. At each point, the model computed its signal using only data available at that time — no hindsight. "Right" means the price was higher 12 months later.
+                  {backtestResults.baseRate != null && <span> Bitcoin went up in {backtestResults.baseRate}% of all 12-month periods — judge the buy accuracy against that number.</span>}
                 </div>
 
               </Toggle>
             </Toggle>
           </div>
         )}
+
 
         <Divider />
         <div style={{ marginTop: 4 }}>
