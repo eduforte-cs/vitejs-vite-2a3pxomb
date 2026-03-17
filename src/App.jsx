@@ -3195,7 +3195,7 @@ export default function MMARDashboard() {
       },
       {
         name: "Worst case (RANSAC)",
-        value: `$${fmtK(supportPrice)}`,
+        value: `${fmtK(supportPrice)}`,
         threshold: `−${distToSupportPct.toFixed(0)}% from today`,
         met: distToSupportPct > 0,
         detail: `Implied return to FV: ${impliedReturnToFV >= 0 ? "+" : ""}${impliedReturnToFV.toFixed(0)}%`,
@@ -3221,11 +3221,11 @@ export default function MMARDashboard() {
         source: "mc",
       },
       {
-        name: "Chance of hitting target",
+        name: "Chance of reaching fair value",
         value: `${pFV.toFixed(0)}%`,
         threshold: `weight: ${w3pct}%`,
         met: cond3_fvReach,
-        detail: `Fair value in 12m: $${fmtK(pl1yFutureLocal)}`,
+        detail: `Fair value in 12m: ${fmtK(pl1yFutureLocal)}`,
         source: "mc",
       },
       {
@@ -3254,7 +3254,7 @@ export default function MMARDashboard() {
 
     const mcWorst3y = loss3y?.p5 ? ((loss3y.p5 - S0) / S0 * 100) : -30;
     const maxDownside = ((S0 - supportPrice) / S0 * 100);
-    paras.push(`If you buy today and hold 1 year, there's a ${pFV.toFixed(0)}% probability the price reaches the model's fair value of ${fmtK(pl1yFutureLocal)}. The structural worst case — the RANSAC support floor — is ${fmtK(supportPrice)} (−${maxDownside.toFixed(0)}%). Over 3 years, the Power Law target is ${fmtK(pl3yFuture)} (${pl3yReturn >= 0 ? "+" : ""}${pl3yReturn.toFixed(0)}%).${mcWorst3y > 0 ? " Even in the worst 5% of simulations, you're in profit at 3 years." : ""}`);
+    paras.push(`If you buy today and hold 1 year, there's a ${pFV.toFixed(0)}% chance the price reaches its fair value of ${fmtK(pl1yFutureLocal)}. The worst case floor — the lowest level Bitcoin has historically respected — is ${fmtK(supportPrice)} (−${maxDownside.toFixed(0)}% from today). Over 3 years, the fair value target is ${fmtK(pl3yFuture)} (${pl3yReturn >= 0 ? "+" : ""}${pl3yReturn.toFixed(0)}%).${mcWorst3y > 0 ? " Even in the worst 5% of simulations, you're in profit at 3 years." : ""}`);
 
     paras.push(episodeCallout || `Bitcoin is near its structural fair value. The market is ${regimeNote}.`);
     if (Math.abs(sig) >= 0.15 && conditionalRemaining > 0) {
@@ -3521,7 +3521,7 @@ export default function MMARDashboard() {
 
                     {/* PL target */}
                     <div style={{ marginBottom: 12, paddingBottom: 12, borderBottom: "1px solid #F1F1EF" }}>
-                      <div style={{ fontSize: 10, color: "#BFBFBA", marginBottom: 3 }}>Power Law target</div>
+                      <div style={{ fontSize: 10, color: "#BFBFBA", marginBottom: 3 }}>Fair value ({card.horizon})</div>
                       <div style={{ fontSize: 20, fontWeight: 700, color: "#37352F", fontFamily: "'DM Mono', monospace", lineHeight: 1 }}>
                         ${fmtK(card.plTarget)}
                       </div>
@@ -3535,7 +3535,7 @@ export default function MMARDashboard() {
                       {[
                         { label: "Chance of profit", value: `${card.pProfit.toFixed(0)}%`, good: card.pProfit > 70 },
                         { label: "Chance of loss",   value: `${card.pLoss.toFixed(0)}%`,   good: card.pLoss < 20 },
-                        { label: "Chance of hitting target", value: `${card.pFairValue.toFixed(0)}%`, good: card.pFairValue > 50 },
+                        { label: "Chance of reaching fair value", value: `${card.pFairValue.toFixed(0)}%`, good: card.pFairValue > 50 },
                       ].map(({ label, value, good }) => (
                         <div key={label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                           <span style={{ fontSize: 12, color: "#9B9A97" }}>{label}</span>
@@ -4987,7 +4987,7 @@ export default function MMARDashboard() {
                 { label: "Current regime", value: ouRegimes ? (ouRegimes.currentRegime === 0 ? "Calm" : "Volatile") : "–", desc: ouRegimes ? `Vol scale: ${ouRegimes.regimes[ouRegimes.currentRegime].volScale.toFixed(2)}x` : "" },
                 { label: "Residual σ", value: fmt(resStd, 4), desc: "Deviation amplitude" },
                 { label: "RANSAC Slope", value: ransac ? fmt(ransac.b, 3) : "–", desc: "Robust fit (excl. bubbles)" },
-                { label: "Support floor", value: `${resFloorSigma.toFixed(2)}σ`, desc: `RANSAC min: $${fmtK(ransac ? Math.exp(ransac.a + ransac.b * Math.log(t0) + ransac.floor) : Math.exp(Math.log(plToday) + resFloor))}` },
+                { label: "Support floor", value: `${resFloorSigma.toFixed(2)}σ`, desc: `RANSAC min: ${fmtK(ransac ? Math.exp(ransac.a + ransac.b * Math.log(t0) + ransac.floor) : Math.exp(Math.log(plToday) + resFloor))}` },
                 { label: "Kurtosis", value: fmt(kurt, 2), desc: `Excess: ${fmt(kurt - 3, 2)} (fat tails)` },
                 { label: "Skewness", value: fmt(skew, 3), desc: "Tail asymmetry" },
                 { label: "Annual Volatility", value: `${(annualVol * 100).toFixed(0)}%`, desc: volInfo.desc },
