@@ -3188,7 +3188,7 @@ export default function MMARDashboard() {
       {
         name: "Valuation (σ)",
         value: `${sig.toFixed(2)}σ`,
-        threshold: `< ${sigThr}σ`,
+        threshold: `< ${thr.sig}σ`,
         met: cond1_discount,
         detail: `${Math.abs(deviationPct).toFixed(0)}% ${deviationPct < 0 ? "below" : "above"} fair value`,
         source: "pl",
@@ -3599,11 +3599,12 @@ export default function MMARDashboard() {
                           )}
                         </p>
                         {calibratedWeights && (
-                  <p style={{ margin: "0 0 10px" }}>
-                    Calibrated weights — how much each factor matters: discount depth <strong style={{ color: "#37352F" }}>×{calibratedWeights.w1}</strong>, loss risk <strong style={{ color: "#37352F" }}>×{calibratedWeights.w2}</strong>, fair value probability <strong style={{ color: "#37352F" }}>×{calibratedWeights.w3}</strong>, floor safety <strong style={{ color: "#37352F" }}>×{calibratedWeights.w4}</strong>.
-                    {calibratedWeights.w2 > calibratedWeights.w1 && <span style={{ color: "#9B9A97" }}> Loss risk outweights discount — the model can say YES even with moderate discount if risk is very low.</span>}
-                  </p>
-                )}
+                          <p style={{ margin: "0 0 10px" }}>
+                            Calibrated weights — how much each factor matters: discount depth <strong style={{ color: "#37352F" }}>×{calibratedWeights.w1}</strong>, loss risk <strong style={{ color: "#37352F" }}>×{calibratedWeights.w2}</strong>, fair value probability <strong style={{ color: "#37352F" }}>×{calibratedWeights.w3}</strong>, floor safety <strong style={{ color: "#37352F" }}>×{calibratedWeights.w4}</strong>.
+                            {calibratedWeights.w2 > calibratedWeights.w1 && <span style={{ color: "#9B9A97" }}> Loss risk outweighs discount — the model can say YES even with moderate discount if risk is very low.</span>}
+                          </p>
+                        )}
+                        {avgY != null && avgN != null && (
                           <p style={{ margin: "0 0 10px" }}>
                             Average 12-month return after a YES signal: <strong style={{ color: "#27AE60" }}>+{avgY}%</strong>. After a NO signal: <strong style={{ color: avgN > 0 ? "#9B9A97" : "#EB5757" }}>{avgN > 0 ? "+" : ""}{avgN}%</strong>.
                           </p>
