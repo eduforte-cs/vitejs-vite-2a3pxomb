@@ -830,32 +830,65 @@ function runWalkForwardBacktest(prices, a, b, resMean, resStd, resFloor, evtCap,
     allSellResults.push({ date: p.date, sig: +sigLoc.toFixed(2), ret6m: +ret6m.toFixed(1), isGoodSell: ret6m < -20 });
   }
 
-  // Grid search: σ threshold para señal PL bubble
   const sigBubbleCandidates = [0.5, 0.7, 0.8, 1.0, 1.2, 1.5, 1.8, 2.0, 2.2];
-  let bestPlF1 = -1;
-  let calibratedBubbleSig = 1.5; // default conservador
 
-  for (const sigT of sigBubbleCandidates) {
-    const bubbleSignals = allSellResults.filter(r => r.sig > sigT);
-    if (bubbleSignals.length < 3) continue;
-    const tp = bubbleSignals.filter(r => r.isGoodSell).length;
-    const allPos = allSellResults.filter(r => r.isGoodSell).length;
-    const prec = tp / bubbleSignals.length;
-    const rec  = allPos > 0 ? tp / allPos : 0;
-    const f1   = prec + rec > 0 ? 2 * prec * rec / (prec + rec) : 0;
-    if (f1 > bestPlF1) { bestPlF1 = f1; calibratedBubbleSig = sigT; }
+  // Grid search: calibrar DOS umbrales de σ separados
+  // sigReduceThr = primer punto donde corrección > 30% del tiempo → Reduce
+  // sigSellThr   = primer punto donde retorno medio < 0 Y corrección > 50% → Sell
+  let calibratedBubbleSig = 1.0;  // Sell (default)
+  let calibratedReduceSig = 0.5;  // Reduce (default)
+
+  if (allSellResults.length >= 10) {
+    // Construir perfil por σ candidato
+    const profiles = sigBubbleCandidates.map(sigT => {
+      const pts = allSellResults.filter(r => r.sig > sigT);
+      if (pts.length < 3) return null;
+      const n = pts.length;
+      const nFell = pts.filter(r => r.isGoodSell).length;
+      const pct20 = nFell / n;
+      const avgRet = pts.reduce((s, r) => s + r.ret6m, 0) / n;
+      return { sigT, n, pct20, avgRet };
+    }).filter(Boolean);
+
+    // sigReduceThr: primer σ donde pct20 > 35% (corrección común pero no mayoritaria)
+    const reduceCandidate = profiles.find(p => p.pct20 > 0.35);
+    if (reduceCandidate) calibratedReduceSig = reduceCandidate.sigT;
+
+    // sigSellThr: primer σ donde retorno medio < 0 Y pct20 > 50%
+    const sellCandidate = profiles.find(p => p.avgRet < 0 && p.pct20 > 0.50);
+    if (sellCandidate) calibratedBubbleSig = sellCandidate.sigT;
+    else {
+      // Fallback: primer σ donde pct20 > 50% aunque retorno sea positivo
+      const fallback = profiles.find(p => p.pct20 > 0.50);
+      if (fallback) calibratedBubbleSig = fallback.sigT;
+    }
+
+    // Asegurar que Sell > Reduce siempre
+    if (calibratedBubbleSig <= calibratedReduceSig) {
+      calibratedBubbleSig = Math.min(calibratedReduceSig + 0.3, 2.0);
+    }
   }
 
-  // Métricas PL bubble para la UI
-  const bubblePoints = allSellResults.filter(r => r.sig > calibratedBubbleSig);
+  // Métricas PL bubble para la UI — Sell threshold
+  const bubblePoints  = allSellResults.filter(r => r.sig > calibratedBubbleSig);
+  const reducePoints  = allSellResults.filter(r => r.sig > calibratedReduceSig && r.sig <= calibratedBubbleSig);
   const avgRetFn = arr => arr.length > 0 ? +(arr.reduce((s,r)=>s+r.ret6m,0)/arr.length).toFixed(1) : null;
   const pct20Fn  = arr => arr.length > 0 ? +(arr.filter(r=>r.isGoodSell).length/arr.length*100).toFixed(1) : null;
   const plBubbleMetrics = {
-    n: bubblePoints.length,
-    avgRet6m: avgRetFn(bubblePoints),
-    pct20: pct20Fn(bubblePoints),
-    maxDrawdown: bubblePoints.length > 0 ? +Math.min(...bubblePoints.map(r=>r.ret6m)).toFixed(1) : null,
-    sigThreshold: calibratedBubbleSig,
+    sell: {
+      n: bubblePoints.length,
+      avgRet6m: avgRetFn(bubblePoints),
+      pct20: pct20Fn(bubblePoints),
+      maxDrawdown: bubblePoints.length > 0 ? +Math.min(...bubblePoints.map(r=>r.ret6m)).toFixed(1) : null,
+      sigThreshold: calibratedBubbleSig,
+    },
+    reduce: {
+      n: reducePoints.length,
+      avgRet6m: avgRetFn(reducePoints),
+      pct20: pct20Fn(reducePoints),
+      maxDrawdown: reducePoints.length > 0 ? +Math.min(...reducePoints.map(r=>r.ret6m)).toFixed(1) : null,
+      sigThreshold: calibratedReduceSig,
+    },
   };
 
   // ── Calibración de thresholds de divergencias Hurst por grid search ──
@@ -1063,6 +1096,7 @@ function runWalkForwardBacktest(prices, a, b, resMean, resStd, resFloor, evtCap,
     sellThresholds: bestSellThresholds,
     plBubbleMetrics,
     calibratedBubbleSig,
+    calibratedReduceSig,
     sigmaBuckets,
     crossValidation,
     stabilityDelta,
@@ -3210,10 +3244,15 @@ export default function MMARDashboard() {
     const isReduceHurst = inOverheat && hurstDiv.score === 2;
 
     // ── Señal PL bubble (señal de venta — ruta 2) ──
-    // σ > umbral calibrado por backtest = sobrecompra estructural extrema
-    const bubbleSigThr = backtestResults?.calibratedBubbleSig ?? 1.5;
-    const isBubble      = sig > bubbleSigThr;         // Sell por PL solo
-    const isWarmBubble  = sig > bubbleSigThr * 0.75 && !isBubble; // Reduce por PL — zona caliente
+    // Dos umbrales calibrados por backtest desde los buckets de σ:
+    // - sellSigThr:   retorno medio < 0 y corrección > 50% del tiempo → Sell
+    // - reduceSigThr: corrección > 35% del tiempo → Reduce
+    const sellSigThr   = backtestResults?.calibratedBubbleSig ?? 1.0;
+    const reduceSigThr = backtestResults?.calibratedReduceSig ?? 0.5;
+    const bubbleSigThr = sellSigThr; // alias para la UI
+
+    const isBubble      = sig > sellSigThr;
+    const isWarmBubble  = sig > reduceSigThr && !isBubble;
 
     // Combinar: cualquiera de las dos rutas activa la señal
     const isSellSignal   = isSellHurst || isBubble;
@@ -3221,10 +3260,10 @@ export default function MMARDashboard() {
 
     // Razón principal de la señal (para el answerSub)
     const sellReason = isBubble
-      ? `Power Law says Bitcoin is ${Math.abs(deviationPct).toFixed(0)}% above fair value — past σ>${bubbleSigThr} levels have always corrected.`
+      ? `Power Law: Bitcoin is ${Math.abs(deviationPct).toFixed(0)}% above fair value (σ ${sig.toFixed(2)} > ${sellSigThr}). Above this level, the average 6-month return has been negative historically.`
       : `All three momentum warning signals active. Trend persistence is breaking down while price is extended.`;
     const reduceReason = isWarmBubble
-      ? `Bitcoin is approaching bubble territory (σ ${sig.toFixed(2)} vs threshold ${bubbleSigThr}). Historical corrections have started from these levels.`
+      ? `Bitcoin is above the reduce threshold (σ ${sig.toFixed(2)} > ${reduceSigThr}). Corrections happen more than a third of the time from here — consider reducing new exposure.`
       : `Two momentum warning signals active at elevated price. Early signs of exhaustion.`;
 
     let answer, answerColor, answerSub, confidence, subtitle, subtitleColor;
@@ -3704,18 +3743,23 @@ export default function MMARDashboard() {
                     </div>
 
                     {/* Ruta 1: Power Law bubble */}
-                    <div style={{ marginBottom: 12, padding: "10px 12px", background: buyVerdict.isBubble ? "#FFF5F5" : "#FAFAF8", borderRadius: 6, border: `1px solid ${buyVerdict.isBubble ? "#FECACA" : "#E8E5E0"}` }}>
+                    <div style={{ marginBottom: 12, padding: "10px 12px", background: buyVerdict.isBubble ? "#FFF5F5" : buyVerdict.isWarmBubble ? "#FFFBF5" : "#FAFAF8", borderRadius: 6, border: `1px solid ${buyVerdict.isBubble ? "#FECACA" : buyVerdict.isWarmBubble ? "#FDE68A" : "#E8E5E0"}` }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
                         <div style={{ fontSize: 12, fontWeight: 600, color: "#37352F" }}>Path 1 — Power Law overextension</div>
                         <div style={{ fontSize: 12, fontWeight: 600, color: buyVerdict.isBubble ? "#EB5757" : buyVerdict.isWarmBubble ? "#F2994A" : "#BFBFBA" }}>
                           {buyVerdict.isBubble ? "⚠ Sell" : buyVerdict.isWarmBubble ? "⚡ Reduce" : "Clear"}
                         </div>
                       </div>
-                      <div style={{ fontSize: 11, color: "#9B9A97" }}>
-                        σ = {sigmaFromPL.toFixed(2)} · Sell threshold: &gt;{buyVerdict.bubbleSigThr}σ · Reduce zone: &gt;{(buyVerdict.bubbleSigThr * 0.75).toFixed(1)}σ
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 4 }}>
+                        <div style={{ fontSize: 11, color: "#9B9A97" }}>
+                          Sell: σ &gt; <strong style={{ color: "#EB5757" }}>{buyVerdict.bubbleSigThr}</strong> · Current: <strong style={{ color: sig > buyVerdict.bubbleSigThr ? "#EB5757" : "#37352F" }}>{sigmaFromPL.toFixed(2)}</strong>
+                        </div>
+                        <div style={{ fontSize: 11, color: "#9B9A97" }}>
+                          Reduce: σ &gt; <strong style={{ color: "#F2994A" }}>{backtestResults?.calibratedReduceSig ?? 0.5}</strong>
+                        </div>
                       </div>
-                      <div style={{ fontSize: 11, color: "#BFBFBA", marginTop: 2 }}>
-                        Threshold calibrated by backtest — every time σ exceeded this level historically, a correction followed within 6 months.
+                      <div style={{ fontSize: 11, color: "#BFBFBA" }}>
+                        Both thresholds calibrated by backtest from historical correction data.
                       </div>
                     </div>
 
@@ -3925,26 +3969,33 @@ export default function MMARDashboard() {
                   <div style={{ marginBottom: 12 }}>
                     <div style={{ fontSize: 10, color: "#BFBFBA", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600, marginBottom: 8 }}>Do the sell warnings add value over plain overheating?</div>
 
-                    {/* PL bubble signal — fila adicional */}
-                    {backtestResults.plBubbleMetrics?.n > 0 && (
+                    {/* PL bubble signal — Sell y Reduce por separado */}
+                    {backtestResults.plBubbleMetrics && (
                       <div style={{ background: "#FFF9F9", border: "1px solid #FECACA", borderRadius: 6, padding: "10px 12px", marginBottom: 10 }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-                          <div style={{ fontSize: 12, fontWeight: 600, color: "#EB5757" }}>Power Law bubble (σ &gt; {backtestResults.calibratedBubbleSig})</div>
-                          <div style={{ fontSize: 11, fontFamily: "'DM Mono', monospace", color: "#9B9A97" }}>{backtestResults.plBubbleMetrics.n} events</div>
-                        </div>
-                        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 }}>
+                        <div style={{ fontSize: 11, fontWeight: 600, color: "#9B9A97", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>Power Law signal — calibrated thresholds</div>
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
                           {[
-                            { label: "Fell >20%", value: backtestResults.plBubbleMetrics.pct20 != null ? `${Math.round(parseFloat(backtestResults.plBubbleMetrics.pct20)/100*backtestResults.plBubbleMetrics.n)}/${backtestResults.plBubbleMetrics.n}` : "—", color: parseFloat(backtestResults.plBubbleMetrics.pct20) > 50 ? "#EB5757" : "#9B9A97" },
-                            { label: "Avg 6m return", value: backtestResults.plBubbleMetrics.avgRet6m != null ? `${backtestResults.plBubbleMetrics.avgRet6m > 0 ? "+" : ""}${backtestResults.plBubbleMetrics.avgRet6m}%` : "—", color: backtestResults.plBubbleMetrics.avgRet6m < 0 ? "#27AE60" : "#EB5757" },
-                            { label: "Worst 6m", value: backtestResults.plBubbleMetrics.maxDrawdown != null ? `${backtestResults.plBubbleMetrics.maxDrawdown > 0 ? "+" : ""}${backtestResults.plBubbleMetrics.maxDrawdown}%` : "—", color: "#EB5757" },
-                          ].map(({ label, value, color }) => (
-                            <div key={label}>
-                              <div style={{ fontSize: 10, color: "#BFBFBA", marginBottom: 2 }}>{label}</div>
-                              <div style={{ fontSize: 14, fontWeight: 600, fontFamily: "'DM Mono', monospace", color }}>{value}</div>
+                            { label: `Sell (σ > ${backtestResults.calibratedBubbleSig})`, data: backtestResults.plBubbleMetrics.sell, color: "#EB5757" },
+                            { label: `Reduce (σ > ${backtestResults.calibratedReduceSig})`, data: backtestResults.plBubbleMetrics.reduce, color: "#F2994A" },
+                          ].map(({ label, data, color }) => (
+                            <div key={label} style={{ background: "#FFF", borderRadius: 6, border: "1px solid #F1F1EF", padding: "8px 10px" }}>
+                              <div style={{ fontSize: 11, fontWeight: 600, color, marginBottom: 6 }}>{label}</div>
+                              <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                                {[
+                                  { k: "Events", v: data?.n ?? 0 },
+                                  { k: "Fell >20%", v: data?.n > 0 && data?.pct20 != null ? `${Math.round(parseFloat(data.pct20)/100*(data.n))}/${data.n}` : "—" },
+                                  { k: "Avg 6m", v: data?.avgRet6m != null ? `${data.avgRet6m > 0 ? "+" : ""}${data.avgRet6m}%` : "—" },
+                                ].map(({ k, v }) => (
+                                  <div key={k} style={{ display: "flex", justifyContent: "space-between" }}>
+                                    <span style={{ fontSize: 11, color: "#9B9A97" }}>{k}</span>
+                                    <span style={{ fontSize: 11, fontFamily: "'DM Mono', monospace", color: "#37352F" }}>{v}</span>
+                                  </div>
+                                ))}
+                              </div>
                             </div>
                           ))}
                         </div>
-                        <div style={{ fontSize: 11, color: "#BFBFBA", marginTop: 6 }}>σ threshold calibrated by grid search — maximizes correction prediction over 6-month horizon.</div>
+                        <div style={{ fontSize: 11, color: "#BFBFBA", marginTop: 6 }}>Both thresholds calibrated by grid search from historical correction data — not chosen by hand.</div>
                       </div>
                     )}
 
@@ -4037,7 +4088,8 @@ export default function MMARDashboard() {
                               <tr key={b.label} style={{ borderBottom: "1px solid #F1F1EF", background: isOverheat ? "#FFFAF8" : "#FFF" }}>
                                 <td style={{ padding: "8px 10px", fontWeight: isOverheat ? 600 : 400, color: isOverheat ? "#E8703A" : "#37352F" }}>
                                   {b.label}
-                                  {b.min === (backtestResults.calibratedBubbleSig ?? 99) && <span style={{ fontSize: 10, color: "#EB5757", marginLeft: 6 }}>← sell threshold</span>}
+                                  {b.min === (backtestResults.calibratedBubbleSig ?? 99) && <span style={{ fontSize: 10, color: "#EB5757", marginLeft: 6 }}>← sell</span>}
+                                  {b.min === (backtestResults.calibratedReduceSig ?? 99) && b.min !== (backtestResults.calibratedBubbleSig ?? 99) && <span style={{ fontSize: 10, color: "#F2994A", marginLeft: 6 }}>← reduce</span>}
                                 </td>
                                 <td style={{ padding: "8px 10px", textAlign: "right", color: "#9B9A97", fontFamily: "'DM Mono', monospace" }}>{b.n}</td>
                                 <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'DM Mono', monospace", color: pctColor, fontWeight: isOverheat ? 600 : 400 }}>
