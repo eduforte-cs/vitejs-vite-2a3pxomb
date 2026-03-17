@@ -3186,7 +3186,7 @@ export default function MMARDashboard() {
     // ── Panel de signals: dos secciones separadas ──
     const plSignals = [
       {
-        name: "Valuation (σ)",
+        name: "Price vs fair value",
         value: `${sig.toFixed(2)}σ`,
         threshold: `< ${thr.sig}σ`,
         met: cond1_discount,
@@ -3213,7 +3213,7 @@ export default function MMARDashboard() {
 
     const mcSignals = [
       {
-        name: "P(loss in 12m)",
+        name: "Chance of loss (12m)",
         value: `${l1y.toFixed(0)}%`,
         threshold: `weight: ${w2pct}%`,
         met: cond2_lossRisk,
@@ -3221,7 +3221,7 @@ export default function MMARDashboard() {
         source: "mc",
       },
       {
-        name: "P(reaches fair value)",
+        name: "Chance of hitting target",
         value: `${pFV.toFixed(0)}%`,
         threshold: `weight: ${w3pct}%`,
         met: cond3_fvReach,
@@ -3229,7 +3229,7 @@ export default function MMARDashboard() {
         source: "mc",
       },
       {
-        name: "Floor breach risk",
+        name: "Chance of hitting worst case",
         value: `${pFloor.toFixed(1)}%`,
         threshold: `weight: ${w4pct}%`,
         met: cond4_noFloor,
@@ -3297,6 +3297,12 @@ export default function MMARDashboard() {
     }
 
     // Datos para las dos tarjetas de horizonte
+    // worstCase: soporte RANSAC evaluado en el horizonte correspondiente (no hoy)
+    // La línea RANSAC crece con el tiempo — en 1Y y 3Y el floor estará más arriba
+    const supportAt = t => ransac
+      ? Math.exp(ransac.a + ransac.b * Math.log(t) + ransac.floor)
+      : supportPrice;
+
     const horizonCards = [
       {
         horizon: "1 year",
@@ -3305,7 +3311,7 @@ export default function MMARDashboard() {
         pProfit: pPos1y,
         pLoss: l1y,
         pFairValue: pFV,
-        worstCase: supportPrice,
+        worstCase: supportAt(t0 + 365),
         verdict: subtitle,
         verdictColor: subtitleColor,
         answer,
@@ -3318,7 +3324,7 @@ export default function MMARDashboard() {
         pProfit: pPos3y,
         pLoss: l3y,
         pFairValue: pFV3y,
-        worstCase: supportPrice, // mismo floor estructural
+        worstCase: supportAt(t0 + 1095),
         verdict: verdict3y,
         verdictColor: verdict3yColor,
         answer: verdict3y === "Sell" || verdict3y === "Reduce" || verdict3y === "Hold" || verdict3y === "Wait" ? "NO" : "YES",
@@ -3489,8 +3495,8 @@ export default function MMARDashboard() {
                 {buyVerdict.answerSub}
               </div>
               <div style={{ fontSize: 11, color: "#BFBFBA", marginTop: 8 }}>
-                {buyVerdict.nCondsMet}/4 conditions met · Confidence: {buyVerdict.confidence}
-                {buyVerdict.thr ? <span> · Thresholds calibrated by backtest</span> : null}
+                Signal based on historical data · Confidence: {buyVerdict.confidence}
+                {buyVerdict.thr ? <span> · Calibrated by backtest</span> : null}
               </div>
             </div>
 
@@ -3527,9 +3533,9 @@ export default function MMARDashboard() {
                     {/* MC probabilities */}
                     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                       {[
-                        { label: "P(any profit)", value: `${card.pProfit.toFixed(0)}%`, good: card.pProfit > 70 },
-                        { label: "P(loss)",       value: `${card.pLoss.toFixed(0)}%`,   good: card.pLoss < 20 },
-                        { label: "P(reach FV)",   value: `${card.pFairValue.toFixed(0)}%`, good: card.pFairValue > 50 },
+                        { label: "Chance of profit", value: `${card.pProfit.toFixed(0)}%`, good: card.pProfit > 70 },
+                        { label: "Chance of loss",   value: `${card.pLoss.toFixed(0)}%`,   good: card.pLoss < 20 },
+                        { label: "Chance of hitting target", value: `${card.pFairValue.toFixed(0)}%`, good: card.pFairValue > 50 },
                       ].map(({ label, value, good }) => (
                         <div key={label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                           <span style={{ fontSize: 12, color: "#9B9A97" }}>{label}</span>
@@ -3543,7 +3549,7 @@ export default function MMARDashboard() {
                     {/* Worst case */}
                     <div style={{ marginTop: 12, paddingTop: 10, borderTop: "1px solid #F1F1EF" }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                        <span style={{ fontSize: 11, color: "#BFBFBA" }}>Structural floor (RANSAC)</span>
+                        <span style={{ fontSize: 11, color: "#BFBFBA" }}>Worst case floor</span>
                         <span style={{ fontSize: 12, fontWeight: 600, fontFamily: "'DM Mono', monospace", color: "#9B9A97" }}>
                           ${fmtK(card.worstCase)}
                         </span>
@@ -3560,7 +3566,7 @@ export default function MMARDashboard() {
               {/* Sección PL */}
               <div style={{ marginBottom: 16 }}>
                 <div style={{ fontSize: 10, color: "#BFBFBA", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600, marginBottom: 10 }}>
-                  Structural anchor — Power Law
+                  Where you are today
                 </div>
                 {buyVerdict.plSignals?.map(s => (
                   <div key={s.name} style={{ display: "grid", gridTemplateColumns: "1fr auto auto", alignItems: "center", gap: 8, marginBottom: 10 }}>
@@ -3579,7 +3585,7 @@ export default function MMARDashboard() {
               {/* Sección MC */}
               <div>
                 <div style={{ fontSize: 10, color: "#BFBFBA", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600, marginBottom: 10 }}>
-                  Probabilistic outlook — Monte Carlo · 2,000 paths
+                  What the model expects
                 </div>
                 {buyVerdict.mcSignals?.map(s => (
                   <div key={s.name} style={{ marginBottom: 10 }}>
@@ -3620,26 +3626,26 @@ export default function MMARDashboard() {
                 <div style={{ marginTop: 12 }}>
                   <div style={{ borderTop: "1px solid #E8E5E0", paddingTop: 12 }}>
                     <div style={{ fontSize: 10, color: "#BFBFBA", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600, marginBottom: 10 }}>
-                      Hurst divergence index — sell signal · {buyVerdict.hurstDiv.score}/3
+                      Sell warning signals · {buyVerdict.hurstDiv.score}/3 active
                     </div>
                     {[
                       {
-                        label: "Price vs Hurst (D1)",
+                        label: "Price rising, momentum falling",
                         active: buyVerdict.hurstDiv.d1,
                         detail: `σ trend: ${buyVerdict.hurstDiv.detail.sigmaDelta >= 0 ? "+" : ""}${buyVerdict.hurstDiv.detail.sigmaDelta} · H90: ${buyVerdict.hurstDiv.detail.h90} vs ${buyVerdict.hurstDiv.detail.h90prev} prior`,
-                        desc: "Price rising but H90 falling — momentum divergence",
+                        desc: "Price is extended but trend persistence is weakening — classic exhaustion signal",
                       },
                       {
-                        label: "Short vs long Hurst (D2)",
+                        label: "Short-term momentum breaking down",
                         active: buyVerdict.hurstDiv.d2,
                         detail: `H30: ${buyVerdict.hurstDiv.detail.h30} · H90: ${buyVerdict.hurstDiv.detail.h90}`,
-                        desc: "H30 breaks below H90 — short-term momentum failing first",
+                        desc: "Recent momentum is fading before the longer-term trend — an early warning",
                       },
                       {
-                        label: "Hurst vs volatility (D3)",
+                        label: "Volatility expanding as trend weakens",
                         active: buyVerdict.hurstDiv.d3,
                         detail: `Vol ratio: ${buyVerdict.hurstDiv.detail.volRatio} · H90 trend: ${buyVerdict.hurstDiv.detail.h90 < buyVerdict.hurstDiv.detail.h90prev ? "↓" : "→"}`,
-                        desc: "Persistence falling as volatility expands — regime breakdown",
+                        desc: "Uncertainty rising while momentum falls — typical sign of a regime change",
                       },
                     ].map(({ label, active, detail, desc }) => (
                       <div key={label} style={{ marginBottom: 10 }}>
@@ -3654,10 +3660,10 @@ export default function MMARDashboard() {
                       </div>
                     ))}
                     <div style={{ fontSize: 11, color: "#9B9A97", padding: "8px 10px", background: "#F7F6F3", borderRadius: 6, marginTop: 4 }}>
-                      {buyVerdict.hurstDiv.score === 0 && "No divergences active. Momentum structure intact."}
-                      {buyVerdict.hurstDiv.score === 1 && "One divergence active. Early warning — monitor but no action required."}
-                      {buyVerdict.hurstDiv.score === 2 && "Two divergences active. Momentum weakening — reduce new exposure at these levels."}
-                      {buyVerdict.hurstDiv.score === 3 && "All three divergences active. Structural momentum breakdown — high-conviction sell signal."}
+                      {buyVerdict.hurstDiv.score === 0 && "No warning signals. Momentum structure looks healthy."}
+                      {buyVerdict.hurstDiv.score === 1 && "One early warning signal. Nothing urgent — keep watching."}
+                      {buyVerdict.hurstDiv.score === 2 && "Two warning signals at elevated price. Consider reducing exposure gradually."}
+                      {buyVerdict.hurstDiv.score === 3 && "All three warning signals active. Historically this has preceded significant corrections."}
                       {!buyVerdict.hurstDiv.score && buyVerdict.hurstDiv.score !== 0 && "Insufficient data to compute divergences."}
                     </div>
                   </div>
