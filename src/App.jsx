@@ -89,23 +89,18 @@ function fitPowerLaw(prices) {
   const ransacResiduals = pts.filter(p => p.t > liquidStart).map(p => Math.log(p.price) - (rA + rB * Math.log(p.t)));
   const ransacFloor = ransacResiduals.length > 100 ? Math.min(...ransacResiduals) : -0.5;
 
-  // resFloor como residuo WLS equivalente evaluado en cada t para el chart
-  // En lugar de un único punto, se computa como la diferencia media sobre el período completo
-  // Esto da una constante más estable que evaluar solo en tToday
-  const allPts = pts.filter(p => p.t > liquidStart);
-  const resFloorDeltas = allPts.map(p => {
-    const ransacLogP = rA + rB * Math.log(p.t) + ransacFloor;
-    const wlsLogP = a + b * Math.log(p.t);
-    return ransacLogP - wlsLogP;
-  });
-  const resFloor = resFloorDeltas.length > 0
-    ? resFloorDeltas.reduce((s, x) => s + x, 0) / resFloorDeltas.length
-    : ransacFloor;
+  // resFloor: diferencia entre la línea RANSAC y la WLS evaluada en tToday.
+  // Se evalúa en el punto actual porque es el soporte relevante para el usuario ahora.
+  // La media histórica era "más estable" pero producía un offset incorrecto en fechas recientes
+  // porque las pendientes RANSAC y WLS difieren — el delta no es constante en el tiempo.
+  const tToday = pts[pts.length - 1].t;
+  const supportPriceToday = Math.exp(rA + rB * Math.log(tToday) + ransacFloor);
+  const wlsPriceToday = Math.exp(a + b * Math.log(tToday));
+  const resFloor = Math.log(supportPriceToday) - Math.log(wlsPriceToday);
 
   const resFloorSigma = ((resFloor - resMean) / resStd);
 
-  // supportPrice(t): función directa que usa la línea RANSAC sin aproximación
-  // Disponible para el MC y cualquier cálculo que necesite el precio de soporte en t arbitrario
+  // supportPriceFn: usa RANSAC directo para cualquier t arbitrario (MC, generateVerdict, etc.)
   const supportPriceFn = t => Math.exp(rA + rB * Math.log(t) + ransacFloor);
 
   return { a, b, residuals, resMean, resStd, resFloor, resFloorSigma, r2, pts, ransacResiduals, ransac: { a: rA, b: rB, floor: ransacFloor }, supportPriceFn };
