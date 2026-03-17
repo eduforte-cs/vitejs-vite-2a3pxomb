@@ -654,6 +654,7 @@ function runWalkForwardBacktest(prices, a, b, resMean, resStd, resFloor, evtCap,
       sig: +sig.toFixed(2),
       pLoss1y: +pLoss1y.toFixed(1),
       pFV: +pFV.toFixed(1),
+      pFloor: +(paths.floorBreakPct || 0).toFixed(2), // P(toca floor) del MC
       realReturn: +realReturn.toFixed(1),
       isGoodBuy,
       regime,
@@ -662,55 +663,110 @@ function runWalkForwardBacktest(prices, a, b, resMean, resStd, resFloor, evtCap,
 
   if (results.length === 0) return {
     thresholds: { sig: -0.5, pLoss1y: 20, pFV: 40 },
+    weights: null,
     precision: null, recall: null, nYes: 0, nNo: 0,
     avgReturnYes: null, avgReturnNo: null, results: [],
     regimeEffect: null,
   };
 
-  // ── Calibración de umbrales por grid search ──
-  const sigCandidates   = [-0.3, -0.5, -0.8, -1.0, -1.2];
-  const pLossCandidates = [10, 15, 20, 25, 30];
-  const pFVCandidates   = [30, 40, 50, 60];
+  // ── Grid search de pesos continuos (reemplaza thresholds binarios) ──
+  // En lugar de 4 condiciones que se cumplen o no, buscamos la combinación lineal
+  // de las 4 métricas que mejor predice retornos positivos a 12 meses.
+  //
+  // score = w1*(-sig) + w2*(maxLoss - pLoss1y) + w3*(pFV - minFV) + w4*(maxFloor - pFloor)
+  // YES si score > 0
+  //
+  // Todos los candidatos están normalizados para que los pesos sean comparables.
+  // El grid search calibra los pesos contra retornos históricos reales.
 
-  let bestF1 = -1, bestThresholds = { sig: -0.5, pLoss1y: 20, pFV: 40 };
+  const w1Candidates = [0, 0.5, 1, 2, 3];     // peso de (-sig): descuento
+  const w2Candidates = [0, 0.5, 1, 2, 3];     // peso de (maxLoss - pLoss): seguridad MC
+  const w3Candidates = [0, 0.5, 1, 2, 3];     // peso de (pFV - minFV): upside MC
+  const w4Candidates = [0, 0.5, 1];           // peso de (maxFloor - pFloor): floor safety
 
-  for (const sigT of sigCandidates) {
-    for (const pLossT of pLossCandidates) {
-      for (const pFVT of pFVCandidates) {
-        const yesIdx = results.filter(r => r.sig < sigT && r.pLoss1y < pLossT && r.pFV > pFVT);
-        if (yesIdx.length < 5) continue;
-        const tp = yesIdx.filter(r => r.isGoodBuy).length;
-        const allPos = results.filter(r => r.isGoodBuy).length;
-        const precision = tp / yesIdx.length;
-        const recall = allPos > 0 ? tp / allPos : 0;
-        const f1 = precision + recall > 0 ? 2 * precision * recall / (precision + recall) : 0;
-        if (f1 > bestF1) { bestF1 = f1; bestThresholds = { sig: sigT, pLoss1y: pLossT, pFV: pFVT }; }
+  // Normalización: centrar cada variable en su rango típico
+  const sigMean   = results.reduce((s,r) => s + r.sig, 0) / results.length;
+  const lossMean  = results.reduce((s,r) => s + r.pLoss1y, 0) / results.length;
+  const fvMean    = results.reduce((s,r) => s + r.pFV, 0) / results.length;
+  const floorMean = results.reduce((s,r) => s + r.pFloor, 0) / results.length;
+
+  // Feature normalizada por punto: contribución de cada variable al score
+  const feat = results.map(r => ({
+    f1: -(r.sig - sigMean),           // más negativo = mejor (descuento)
+    f2: lossMean - r.pLoss1y,         // más negativo pLoss = mejor
+    f3: r.pFV - fvMean,               // más alto pFV = mejor
+    f4: floorMean - r.pFloor,         // más bajo pFloor = mejor
+  }));
+
+  let bestF1score = -1;
+  let bestWeights = { w1: 1, w2: 2, w3: 1, w4: 1 };
+  let bestThresholds = { sig: -0.5, pLoss1y: 20, pFV: 40 }; // fallback para compatibilidad UI
+
+  for (const w1 of w1Candidates) {
+    for (const w2 of w2Candidates) {
+      for (const w3 of w3Candidates) {
+        for (const w4 of w4Candidates) {
+          if (w1 + w2 + w3 + w4 === 0) continue;
+          const scores = feat.map(f => w1*f.f1 + w2*f.f2 + w3*f.f3 + w4*f.f4);
+          const yesIdx = results.filter((_, i) => scores[i] > 0);
+          if (yesIdx.length < 5) continue;
+          const tp = yesIdx.filter(r => r.isGoodBuy).length;
+          const allPos = results.filter(r => r.isGoodBuy).length;
+          const prec = tp / yesIdx.length;
+          const rec  = allPos > 0 ? tp / allPos : 0;
+          const f1score = prec + rec > 0 ? 2 * prec * rec / (prec + rec) : 0;
+          if (f1score > bestF1score) {
+            bestF1score = f1score;
+            bestWeights = { w1, w2, w3, w4 };
+            // Para compatibilidad con la UI existente, derivar thresholds equivalentes
+            // del percentil de score que separa YES de NO
+            const yesScores = scores.filter(s => s > 0);
+            if (yesScores.length > 0) {
+              const yesR = results.filter((_, i) => scores[i] > 0);
+              bestThresholds = {
+                sig: +(yesR.reduce((s,r) => s + r.sig, 0) / yesR.length).toFixed(2),
+                pLoss1y: +(yesR.reduce((s,r) => s + r.pLoss1y, 0) / yesR.length).toFixed(1),
+                pFV: +(yesR.reduce((s,r) => s + r.pFV, 0) / yesR.length).toFixed(1),
+              };
+            }
+          }
+        }
       }
     }
   }
 
-  // Métricas globales con thresholds calibrados
-  const isYes = r => r.sig < bestThresholds.sig && r.pLoss1y < bestThresholds.pLoss1y && r.pFV > bestThresholds.pFV;
+  // Función de decisión calibrada: YES si score > 0
+  const scoreOf = (sig, pLoss1y, pFV, pFloor) => {
+    const f1 = -(sig - sigMean);
+    const f2 = lossMean - pLoss1y;
+    const f3 = pFV - fvMean;
+    const f4 = floorMean - pFloor;
+    return bestWeights.w1*f1 + bestWeights.w2*f2 + bestWeights.w3*f3 + bestWeights.w4*f4;
+  };
 
-  // Clasificación por nivel — misma lógica que generateVerdict
-  // Strong Buy: condiciones cumplidas con holgura (márgenes del 50% sobre los thresholds)
-  const isStrongBuy = r =>
-    r.sig < bestThresholds.sig * 1.5 &&          // descuento más profundo
-    r.pLoss1y < bestThresholds.pLoss1y * 0.6 &&  // riesgo de pérdida mucho más bajo
-    r.pFV > bestThresholds.pFV * 1.2;            // mayor probabilidad de llegar al FV
+  // Umbral de Strong Buy: score en el percentil 75 de los YES históricos
+  const allScores  = results.map(r => scoreOf(r.sig, r.pLoss1y, r.pFV, r.pFloor));
+  const isYes      = (r, i) => allScores[i] > 0;
+  const yesScores  = allScores.filter(s => s > 0).sort((a,b) => a-b);
+  const strongThresh = yesScores.length > 0
+    ? yesScores[Math.floor(yesScores.length * 0.60)] // top 40% de YES = Strong Buy
+    : 1;
 
-  const levelOf = r => {
-    if (!isYes(r)) return "no";
-    if (isStrongBuy(r)) return "strongBuy";
+  // Clasificación por nivel usando score continuo
+  const isStrongBuy = (r, i) => allScores[i] >= strongThresh;
+
+  const levelOf = (r, i) => {
+    if (!isYes(r, i)) return "no";
+    if (isStrongBuy(r, i)) return "strongBuy";
     return "buy";
   };
 
-  results.forEach(r => { r.level = levelOf(r); });
+  results.forEach((r, i) => { r.level = levelOf(r, i); });
 
-  const strongBuyResults = results.filter(r => r.level === "strongBuy");
-  const buyResults       = results.filter(r => r.level === "buy");
-  const yesResults       = results.filter(isYes);
-  const noResults        = results.filter(r => !isYes(r));
+  const strongBuyResults = results.filter((r, i) => r.level === "strongBuy");
+  const buyResults       = results.filter((r, i) => r.level === "buy");
+  const yesResults       = results.filter((r, i) => isYes(r, i));
+  const noResults        = results.filter((r, i) => !isYes(r, i));
   const truePositives    = yesResults.filter(r => r.isGoodBuy).length;
   const allPositives     = results.filter(r => r.isGoodBuy).length;
 
@@ -936,13 +992,15 @@ function runWalkForwardBacktest(prices, a, b, resMean, resStd, resFloor, evtCap,
     ? +(Math.max(...precisions) - Math.min(...precisions)).toFixed(1)
     : null;
 
-  // Base rate histórico: % de puntos donde el retorno a 12m fue positivo (sin señal)
+  // Base rate histórico
   const baseRate = results.length > 0
     ? +(results.filter(r => r.realReturn > 0).length / results.length * 100).toFixed(1)
     : null;
 
   return {
-    thresholds: bestThresholds,
+    thresholds: bestThresholds, // compatibilidad UI
+    weights: bestWeights,
+    scoringParams: { sigMean, lossMean, fvMean, floorMean, strongThresh },
     precision: yesResults.length > 0 ? +(truePositives / yesResults.length * 100).toFixed(1) : null,
     recall: allPositives > 0 ? +(truePositives / allPositives * 100).toFixed(1) : null,
     nYes: yesResults.length,
@@ -2718,6 +2776,8 @@ export default function MMARDashboard() {
         adfResult,
         backtestResults, p30CI,
         calibratedThresholds: backtestResults?.thresholds || { sig: -0.5, pLoss1y: 20, pFV: 40 },
+        scoringParams: backtestResults?.scoringParams || null,
+        calibratedWeights: backtestResults?.weights || null,
         sellThresholds: backtestResults?.sellThresholds || { sigmaDelta: 0.10, hDelta: -0.03, volRatio: 1.15 },
         pl1y: +plPrice(a, b, t0 + 365).toFixed(0),
         pl2y: +plPrice(a, b, t0 + 730).toFixed(0),
@@ -2764,7 +2824,7 @@ export default function MMARDashboard() {
     percentiles, plForecast365, percentiles3y, plForecast3y,
     pFloorBreak1y, evtCap, floorBreakProb, empiricalFloorProb,
     adfResult,
-    backtestResults, p30CI, calibratedThresholds, sellThresholds,
+    backtestResults, p30CI, calibratedThresholds, scoringParams, calibratedWeights, sellThresholds,
     pl1y, pl2y, pl3y } = d;
 
   const last = percentiles[percentiles.length - 1];
@@ -3045,26 +3105,51 @@ export default function MMARDashboard() {
       return 50;
     })()));
 
-    // ── Thresholds calibrados por backtest walk-forward ──
-    const thr = calibratedThresholds || { sig: -0.5, pLoss1y: 20, pFV: 40 };
-    // Régimen volátil endurece los umbrales
+    // ── Score continuo calibrado por backtest ──
+    // Reemplaza la lógica conjuntiva 4/4 por una combinación lineal de las métricas
+    // cuyos pesos fueron optimizados por grid search contra retornos históricos reales.
     const isVolatile = ouRegimes.currentRegime === 1;
-    const sigThr    = thr.sig;                                      // σ máximo para entrar
-    const pLossThr  = isVolatile ? thr.pLoss1y * 0.75 : thr.pLoss1y; // % máximo P(pérdida 1Y)
-    const pFVThr    = isVolatile ? thr.pFV * 1.15 : thr.pFV;         // % mínimo P(llega al FV)
+    const sp = scoringParams; // parámetros de normalización del backtest
 
-    // ── Lógica conjuntiva: TODAS las condiciones deben cumplirse (compra) ──
-    const cond1_discount   = sig < sigThr;
-    const cond2_lossRisk   = l1y < pLossThr;
-    const cond3_fvReach    = pFV > pFVThr;
-    const cond4_noFloor    = pFloor < (isVolatile ? 3 : 5);
+    let buyScore = 0;
+    let nCondsMet = 0; // mantenido para la UI de "X/4"
+    let cond1_discount = false, cond2_lossRisk = false, cond3_fvReach = false, cond4_noFloor = false;
+    const thr = calibratedThresholds || { sig: -0.5, pLoss1y: 20, pFV: 40 };
 
-    const nCondsMet = [cond1_discount, cond2_lossRisk, cond3_fvReach, cond4_noFloor].filter(Boolean).length;
-    const allMet = nCondsMet === 4;
+    if (sp && calibratedWeights) {
+      // Score normalizado usando los mismos parámetros del backtest
+      const f1 = -(sig - sp.sigMean);
+      const f2 = sp.lossMean - l1y;
+      const f3 = pFV - sp.fvMean;
+      const f4 = sp.floorMean - pFloor;
+      const w = calibratedWeights;
+      buyScore = w.w1*f1 + w.w2*f2 + w.w3*f3 + w.w4*f4;
+
+      // Para la UI: condiciones individuales como contexto (no decisión)
+      cond1_discount = sig < thr.sig;
+      cond2_lossRisk = l1y < thr.pLoss1y;
+      cond3_fvReach  = pFV > thr.pFV;
+      cond4_noFloor  = pFloor < (isVolatile ? 3 : 5);
+      nCondsMet = [cond1_discount, cond2_lossRisk, cond3_fvReach, cond4_noFloor].filter(Boolean).length;
+
+      // Régimen volátil: penalizar el score (sin hardcodear cuánto — es proporcional al score)
+      if (isVolatile) buyScore *= 0.75;
+    } else {
+      // Fallback: lógica conjuntiva original si el backtest no corrió
+      cond1_discount = sig < thr.sig;
+      cond2_lossRisk = l1y < (isVolatile ? thr.pLoss1y * 0.75 : thr.pLoss1y);
+      cond3_fvReach  = pFV > (isVolatile ? thr.pFV * 1.15 : thr.pFV);
+      cond4_noFloor  = pFloor < (isVolatile ? 3 : 5);
+      nCondsMet = [cond1_discount, cond2_lossRisk, cond3_fvReach, cond4_noFloor].filter(Boolean).length;
+      buyScore = nCondsMet >= 4 ? 1 : nCondsMet >= 2 && cond1_discount ? 0.3 : 0;
+    }
+
+    // Umbrales del score: Strong Buy = top 40% de YES históricos, Buy = score > 0
+    const strongScoreThresh = sp?.strongThresh || 1;
+    const isStrongBuy = buyScore >= strongScoreThresh;
+    const isBuy       = buyScore > 0 && !isStrongBuy;
 
     // ── Índice de divergencia Hurst (señal de venta) ──
-    // Solo relevante en sobrecompra. Cada divergencia vale 1 punto (0-3).
-    // Usar thresholds calibrados por backtest si están disponibles
     const sellThr = backtestResults?.sellThresholds || { sigmaDelta: 0.10, hDelta: -0.03, volRatio: 1.15 };
     const hurstDiv = computeHurstDivergences(rollingHurst, sig, 6, sellThr);
     const inOverheat = sig > 0.5;
@@ -3072,11 +3157,11 @@ export default function MMARDashboard() {
     const isWaitSellSign = inOverheat && hurstDiv.score === 2;
 
     let answer, answerColor, answerSub, confidence, subtitle, subtitleColor;
-    if (allMet && sig < sigThr * 1.5 && pFV > pFVThr * 1.2 && l1y < pLossThr * 0.6) {
+    if (isStrongBuy) {
       answer = "YES"; answerColor = "#27AE60"; confidence = "high";
       subtitle = "Strong Buy"; subtitleColor = "#1B8A4A";
-      answerSub = "All four conditions are green. This is the kind of entry the model was built to identify.";
-    } else if (allMet) {
+      answerSub = "The model's strongest buy configuration. Risk is low and the upside case is well-supported.";
+    } else if (isBuy) {
       answer = "YES"; answerColor = "#27AE60"; confidence = "moderate";
       subtitle = "Buy"; subtitleColor = "#27AE60";
       answerSub = "The odds are in your favor. Both the structural and probabilistic picture support entry.";
@@ -3088,10 +3173,10 @@ export default function MMARDashboard() {
       answer = "NO"; answerColor = "#F2994A"; confidence = "moderate";
       subtitle = "Reduce"; subtitleColor = "#F2994A";
       answerSub = `Two Hurst divergences active at elevated price. Momentum showing early exhaustion — reduce new exposure gradually.`;
-    } else if (nCondsMet >= 2 && cond1_discount) {
+    } else if (buyScore > 0 || (nCondsMet >= 2 && cond1_discount)) {
       answer = "NO"; answerColor = "#F2994A"; confidence = "moderate";
       subtitle = "Wait"; subtitleColor = "#F2994A";
-      answerSub = `Discount is real but ${4 - nCondsMet} condition${4 - nCondsMet > 1 ? "s" : ""} not yet met. Better risk/reward likely ahead.`;
+      answerSub = "Some positive signals but not enough conviction yet. Better risk/reward likely ahead.";
     } else {
       answer = "NO"; answerColor = "#F2994A"; confidence = "low";
       subtitle = "Hold"; subtitleColor = "#E8A838";
@@ -3118,11 +3203,19 @@ export default function MMARDashboard() {
       },
     ];
 
+    // Pesos relativos de cada condición MC en el score (para mostrar en UI)
+    const totalW = calibratedWeights
+      ? calibratedWeights.w2 + calibratedWeights.w3 + calibratedWeights.w4
+      : 3;
+    const w2pct = calibratedWeights ? Math.round(calibratedWeights.w2 / totalW * 100) : 33;
+    const w3pct = calibratedWeights ? Math.round(calibratedWeights.w3 / totalW * 100) : 33;
+    const w4pct = calibratedWeights ? Math.round(calibratedWeights.w4 / totalW * 100) : 34;
+
     const mcSignals = [
       {
         name: "P(loss in 12m)",
         value: `${l1y.toFixed(0)}%`,
-        threshold: `< ${pLossThr.toFixed(0)}%`,
+        threshold: `weight: ${w2pct}%`,
         met: cond2_lossRisk,
         detail: `P(loss in 3Y): ${l3y.toFixed(0)}% · ${pPos3y.toFixed(0)}% of paths profitable at 3Y`,
         source: "mc",
@@ -3130,7 +3223,7 @@ export default function MMARDashboard() {
       {
         name: "P(reaches fair value)",
         value: `${pFV.toFixed(0)}%`,
-        threshold: `> ${pFVThr.toFixed(0)}%`,
+        threshold: `weight: ${w3pct}%`,
         met: cond3_fvReach,
         detail: `Fair value in 12m: $${fmtK(pl1yFutureLocal)}`,
         source: "mc",
@@ -3138,7 +3231,7 @@ export default function MMARDashboard() {
       {
         name: "Floor breach risk",
         value: `${pFloor.toFixed(1)}%`,
-        threshold: `< ${isVolatile ? 3 : 5}%`,
+        threshold: `weight: ${w4pct}%`,
         met: cond4_noFloor,
         detail: `Empirically calibrated from historical floor touches`,
         source: "mc",
@@ -3175,7 +3268,8 @@ export default function MMARDashboard() {
       composite, confidence, paras,
       plSignals, mcSignals,
       pFV, pPos1y, pPos3y, pFloor, l1y, l3y,
-      nCondsMet, thr: { sig: sigThr, pLoss: pLossThr, pFV: pFVThr },
+      nCondsMet, thr: { sig: thr.sig, pLoss: thr.pLoss1y, pFV: thr.pFV },
+      buyScore: +buyScore.toFixed(3),
       p30CI, hurstDiv,
     };
   }
@@ -3504,7 +3598,12 @@ export default function MMARDashboard() {
                             <span style={{ color: "#9B9A97" }}> Bitcoin rises in {br}% of all 12-month periods regardless of signal, so the model adds <strong style={{ color: diff > 0 ? "#27AE60" : "#EB5757" }}>{diff > 0 ? "+" : ""}{diff}pp</strong> above that baseline.</span>
                           )}
                         </p>
-                        {avgY != null && avgN != null && (
+                        {calibratedWeights && (
+                  <p style={{ margin: "0 0 10px" }}>
+                    Calibrated weights — how much each factor matters: discount depth <strong style={{ color: "#37352F" }}>×{calibratedWeights.w1}</strong>, loss risk <strong style={{ color: "#37352F" }}>×{calibratedWeights.w2}</strong>, fair value probability <strong style={{ color: "#37352F" }}>×{calibratedWeights.w3}</strong>, floor safety <strong style={{ color: "#37352F" }}>×{calibratedWeights.w4}</strong>.
+                    {calibratedWeights.w2 > calibratedWeights.w1 && <span style={{ color: "#9B9A97" }}> Loss risk outweights discount — the model can say YES even with moderate discount if risk is very low.</span>}
+                  </p>
+                )}
                           <p style={{ margin: "0 0 10px" }}>
                             Average 12-month return after a YES signal: <strong style={{ color: "#27AE60" }}>+{avgY}%</strong>. After a NO signal: <strong style={{ color: avgN > 0 ? "#9B9A97" : "#EB5757" }}>{avgN > 0 ? "+" : ""}{avgN}%</strong>.
                           </p>
