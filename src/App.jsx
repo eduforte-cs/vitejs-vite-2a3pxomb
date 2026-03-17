@@ -815,7 +815,7 @@ function runWalkForwardBacktest(prices, a, b, resMean, resStd, resFloor, evtCap,
 
   // ── Calibración de la señal PL bubble (σ solo, sin Hurst) ──
   // Busca el σ mínimo que, por sí solo, predice correcciones > 20% en 6 meses.
-  // Incluye todos los puntos históricos (no solo overheated) para tener más n.
+  const horizonSell = 182; // 6 meses
   const allSellResults = [];
   for (let i = minTrainDays; i < prices.length - horizonSell; i += 30) {
     const p = prices[i];
