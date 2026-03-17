@@ -5,7 +5,7 @@ import Landing from './Landing.jsx';
 import MMARDashboard from './App.jsx';
 
 function Shell() {
-  const [session, setSession] = useState(true);
+  const [session, setSession] = useState(undefined);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -19,8 +19,8 @@ function Shell() {
     return () => subscription.unsubscribe();
   }, []);
 
-  if (session === undefined) return <div>Loading...</div>;
-  //if (!session) re
+  if (session === undefined) return <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', fontFamily: 'sans-serif', color: '#9B9A97' }}>Loading...</div>;
+  if (!session) return <Landing />;
   return <MMARDashboard session={session} />;
 }
 

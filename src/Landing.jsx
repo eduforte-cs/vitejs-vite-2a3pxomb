@@ -43,7 +43,6 @@ export default function Landing() {
         .landing-btn:hover { opacity: 0.88; }
         .landing-btn:active { transform: scale(0.98); }
         .feature-card:hover { border-color: #BFBFBA; background: #FAFAF8; }
-        .stat-pill { transition: background 0.2s; }
         a { color: #37352F; text-decoration: none; }
         a:hover { opacity: 0.7; }
       `}</style>
@@ -78,9 +77,9 @@ export default function Landing() {
             Should I buy<br />Bitcoin today?
           </h1>
           <p style={{ fontSize: 17, color: '#6B6B6B', lineHeight: 1.65, maxWidth: 480 }}>
-            A quantitative answer based on 16 years of data, fractal mathematics,
-            and 2,000 Monte Carlo simulations. Not a forecast — a structured
-            risk/reward assessment updated in real time.
+            An honest opinion based on quantitative analysis — 16 years of data,
+            fractal mathematics, and 2,000 Monte Carlo simulations — translated
+            into plain language so you can actually act on it.
           </p>
           <p style={{ fontSize: 13, color: '#BFBFBA', marginTop: 14 }}>
             Built by{' '}
@@ -93,53 +92,6 @@ export default function Landing() {
               Edu Forte
             </a>
           </p>
-        </div>
-
-        {/* ── Claim bar ── */}
-        <div style={{
-          display: 'flex', flexWrap: 'wrap', gap: 10, marginBottom: 32,
-          animation: 'fadeUp 0.6s ease-out 0.1s both',
-        }}>
-          {[
-            { value: '98%', label: 'buy signal accuracy', accent: '#27AE60' },
-            { value: '2,000', label: 'MC simulations', accent: '#2F80ED' },
-            { value: '16 yrs', label: 'of Bitcoin data', accent: '#9B51E0' },
-            { value: '5-level', label: 'signal spectrum', accent: '#F2994A' },
-          ].map(({ value, label, accent }) => (
-            <div key={label} className="stat-pill" style={{
-              display: 'flex', alignItems: 'center', gap: 8,
-              padding: '8px 14px', background: '#FAFAF8',
-              border: '1px solid #E8E5E0', borderRadius: 100,
-            }}>
-              <span style={{
-                fontSize: 14, fontWeight: 700, color: accent,
-                fontFamily: "'DM Mono', monospace",
-              }}>{value}</span>
-              <span style={{ fontSize: 12, color: '#9B9A97' }}>{label}</span>
-            </div>
-          ))}
-        </div>
-
-        {/* ── Backtest claim ── */}
-        <div style={{
-          padding: '16px 20px', marginBottom: 32,
-          background: '#F6FEF6', border: '1px solid #C8E6C9', borderRadius: 8,
-          animation: 'fadeUp 0.6s ease-out 0.15s both',
-        }}>
-          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
-            <span style={{ fontSize: 20, lineHeight: 1 }}>✓</span>
-            <div>
-              <div style={{ fontSize: 14, fontWeight: 700, color: '#1B6B3A', marginBottom: 3 }}>
-                98% of buy signals were right — backtested since 2016.
-              </div>
-              <div style={{ fontSize: 13, color: '#4A7C59', lineHeight: 1.5 }}>
-                Every signal was tested against Bitcoin's full history.
-                At each point, only data available at that time was used — no hindsight.
-                "Right" means the price was higher 12 months later.
-                The sell signal correctly identified overheated conditions in every major correction.
-              </div>
-            </div>
-          </div>
         </div>
 
         {/* ── Email gate ── */}
@@ -168,7 +120,7 @@ export default function Landing() {
             </p>
           </div>
         ) : (
-          <div style={{ animation: 'fadeUp 0.6s ease-out 0.2s both' }}>
+          <div style={{ animation: 'fadeUp 0.6s ease-out 0.15s both' }}>
             <div style={{
               padding: '28px 28px 32px', background: '#FAFAF8',
               border: '1px solid #E8E5E0', borderRadius: 10,
@@ -179,7 +131,7 @@ export default function Landing() {
               }}>
                 Free access — just your email
               </div>
-              <div style={{ display: 'flex', gap: 10 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                 <input
                   className="landing-input"
                   type="email"
@@ -189,7 +141,7 @@ export default function Landing() {
                   placeholder="you@email.com"
                   disabled={phase === 'sending'}
                   style={{
-                    flex: 1, padding: '12px 16px', fontSize: 15,
+                    width: '100%', padding: '12px 16px', fontSize: 15,
                     border: '1px solid #E8E5E0', borderRadius: 6,
                     background: '#FFF', color: '#37352F',
                     fontFamily: "'DM Sans', sans-serif",
@@ -201,12 +153,12 @@ export default function Landing() {
                   onClick={handleSubmit}
                   disabled={phase === 'sending' || !email.includes('@')}
                   style={{
-                    padding: '12px 24px', fontSize: 14, fontWeight: 600,
+                    width: '100%', padding: '13px 24px', fontSize: 15, fontWeight: 600,
                     background: '#37352F', color: '#FFF', border: 'none',
                     borderRadius: 6, cursor: 'pointer',
                     fontFamily: "'DM Sans', sans-serif",
                     opacity: phase === 'sending' || !email.includes('@') ? 0.5 : 1,
-                    transition: 'all 0.15s', whiteSpace: 'nowrap',
+                    transition: 'all 0.15s',
                   }}
                 >
                   {phase === 'sending' ? 'Sending...' : 'Get access →'}
@@ -222,40 +174,35 @@ export default function Landing() {
           </div>
         )}
 
-        {/* ── What you'll see ── */}
+        {/* ── What you'll get ── */}
         <div style={{ padding: '56px 0 0', animation: 'fadeUp 0.6s ease-out 0.3s both' }}>
           <div style={{
             fontSize: 11, fontWeight: 600, color: '#BFBFBA',
             textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 20,
           }}>
-            What you'll see
+            What you'll get
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {[
               {
                 icon: '💬',
-                title: 'A five-level signal: Strong Buy → Buy → Hold → Reduce → Sell',
-                desc: "Not just yes/no. The model gives you a calibrated position on the full spectrum, with the exact reason — Power Law overextension, Hurst momentum breakdown, or MC risk profile. Expand to see exactly what's driving it.",
+                title: 'A clear signal based on probabilities, not opinions',
+                desc: 'The model weighs price position, loss risk, and upside potential across 2,000 simulated scenarios — and gives you one actionable answer: buy, hold, reduce, or get out. No gut feeling, no guesswork.',
               },
               {
                 icon: '📉',
-                title: 'A sell signal — not just a buy signal',
-                desc: 'Two independent sell paths: when the price is structurally overextended vs fair value (σ threshold calibrated from historical corrections), and when Hurst momentum divergences signal exhaustion. Either path alone is sufficient.',
+                title: 'A warning before the correction, not after',
+                desc: "Most tools only tell you when to buy. This one also flags when the price is dangerously stretched above its fair value — so you can reduce before the market does it for you.",
               },
               {
                 icon: '🛡️',
-                title: 'Your actual probability of losing money',
-                desc: 'If you buy today, what are your chances of being down at 1 month, 6 months, 1 year, 3 years? Calculated from 2,000 simulated paths — not a guess. The calibration table shows how accurate these probabilities have been historically.',
-              },
-              {
-                icon: '🌡️',
-                title: 'Where you are in the cycle',
-                desc: "A live gauge showing where the current price sits relative to Bitcoin's Power Law fair value. σ < 0 = structural discount. σ > 1 = historically dangerous territory. Thresholds are calibrated from 16 years of corrections.",
+                title: 'Your real odds of losing money at each horizon',
+                desc: "If you buy today, what's the probability you're down in 6 months? In a year? In three years? The model runs 2,000 scenarios and gives you an actual number, not a feeling.",
               },
               {
                 icon: '📊',
-                title: 'A backtest you can actually read',
-                desc: "Every signal checked against every 30-day point since 2016. Tested with only data available at that time — no hindsight. Accuracy, average returns, and cross-cycle stability across 2013–2017, 2018–2021, and 2022–present.",
+                title: 'Backtested against every month since 2016',
+                desc: 'When it said "buy," the price was higher 12 months later 98% of the time. When it said "reduce" or "sell," every major correction followed. No hindsight — only data available at that moment was used. Everything is shown openly inside.',
               },
             ].map(({ icon, title, desc }) => (
               <div key={title} className="feature-card" style={{
@@ -289,7 +236,7 @@ export default function Landing() {
               {[
                 {
                   label: 'Power Law — WLS + RANSAC',
-                  detail: 'Weighted Least Squares on 16 years of daily data with 4-year recency decay. RANSAC for a robust support floor that excludes bubble peaks. EVT/Generalized Pareto Distribution for the empirical upside cap — no arbitrary ±2σ cutoffs.',
+                  detail: 'Weighted Least Squares on 16 years of daily data with 4-year recency decay. RANSAC for a robust support floor that excludes bubble peaks. EVT/Generalized Pareto Distribution for the empirical upside cap.',
                 },
                 {
                   label: 'Fractal volatility — MMAR',
@@ -297,7 +244,7 @@ export default function Landing() {
                 },
                 {
                   label: 'Regime detection — OU diagnostic',
-                  detail: 'Ornstein-Uhlenbeck process with two regimes (calm and volatile), each with its own reversion speed and volatility scale. Used as a regime diagnostic — not as the MC engine. The simulation runs on pure MMAR/Hurst dynamics to avoid artificially dampening tail risk.',
+                  detail: 'Ornstein-Uhlenbeck process with two regimes (calm and volatile). Used as a regime diagnostic — not as the MC engine. The simulation runs on pure MMAR/Hurst dynamics to avoid artificially dampening tail risk.',
                 },
                 {
                   label: 'Monte Carlo — 2,000 paths, 3-year horizon',
@@ -305,7 +252,7 @@ export default function Landing() {
                 },
                 {
                   label: 'Signal calibration — walk-forward backtest',
-                  detail: 'Buy score weights and sell σ thresholds calibrated by grid search against historical returns. Two independent sell paths: Power Law σ threshold (from historical correction percentiles) and Hurst momentum divergences. Probabilistic calibration table shows how well MC loss estimates matched reality.',
+                  detail: 'Buy score weights and sell thresholds calibrated by grid search against historical returns. Two independent sell paths. Probabilistic calibration table shows how well MC loss estimates matched reality across every market cycle.',
                 },
               ].map(({ label, detail }) => (
                 <div key={label} style={{ display: 'flex', gap: 12 }}>
@@ -321,7 +268,6 @@ export default function Landing() {
               ))}
             </div>
 
-            {/* Stats */}
             <div style={{
               display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16,
               textAlign: 'center', marginTop: 20, paddingTop: 16,
@@ -345,11 +291,8 @@ export default function Landing() {
           </div>
         </div>
 
-        {/* ── Honest disclaimer ── */}
-        <div style={{
-          padding: '0 0 40px',
-          animation: 'fadeUp 0.6s ease-out 0.45s both',
-        }}>
+        {/* ── Disclaimer ── */}
+        <div style={{ paddingBottom: 40 }}>
           <div style={{
             padding: '14px 18px', background: '#FFFBF0',
             border: '1px solid #F2E8C9', borderRadius: 8,
@@ -358,7 +301,7 @@ export default function Landing() {
               <strong>Not financial advice.</strong> Past signal accuracy doesn't guarantee future results.
               Bitcoin is volatile and the model can be wrong. Use this as a structured framework
               for thinking about risk — not as a trading system. The 98% accuracy figure is historical
-              and uses data the model was partially trained on.
+              and based on data the model was partially trained on.
             </p>
           </div>
         </div>
