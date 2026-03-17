@@ -752,29 +752,20 @@ function runWalkForwardBacktest(prices, a, b, resMean, resStd, resFloor, evtCap,
     ? yesScores[Math.floor(yesScores.length * 0.60)] // top 40% de YES = Strong Buy
     : 1;
 
-  // Clasificación por nivel usando score continuo
+  // Clasificación por nivel — primer pass con defaults (se actualiza después)
   const isStrongBuy = (r, i) => allScores[i] >= strongThresh;
 
-  const levelOf = (r, i) => {
-    if (!isYes(r, i)) return "no";
-    if (isStrongBuy(r, i)) return "strongBuy";
-    return "buy";
+  const levelOf = (r, i, bubbleSig = 1.0, reduceSig = 0.5) => {
+    if (r.sig > bubbleSig)  return "sell";
+    if (r.sig > reduceSig)  return "reduce";
+    if (isYes(r, i)) {
+      if (isStrongBuy(r, i)) return "strongBuy";
+      return "buy";
+    }
+    return "no";
   };
 
-  results.forEach((r, i) => { r.level = levelOf(r, i); });
-
-  const strongBuyResults = results.filter((r, i) => r.level === "strongBuy");
-  const buyResults       = results.filter((r, i) => r.level === "buy");
-  const yesResults       = results.filter((r, i) => isYes(r, i));
-  const noResults        = results.filter((r, i) => !isYes(r, i));
-  const truePositives    = yesResults.filter(r => r.isGoodBuy).length;
-  const allPositives     = results.filter(r => r.isGoodBuy).length;
-
-  // ── Segmentación por régimen ──
-  const yesCalm     = yesResults.filter(r => r.regime === "calm");
-  const yesVolatile = yesResults.filter(r => r.regime === "volatile");
-  const allCalm     = results.filter(r => r.regime === "calm");
-  const allVolatile = results.filter(r => r.regime === "volatile");
+  results.forEach((r, i) => { r.level = levelOf(r, i); }); // primer pass con defaults
 
   const avgReturn = arr => arr.length > 0
     ? +(arr.reduce((s,r) => s + r.realReturn, 0) / arr.length).toFixed(1)
@@ -783,35 +774,7 @@ function runWalkForwardBacktest(prices, a, b, resMean, resStd, resFloor, evtCap,
     ? +(arr.filter(r => r.isGoodBuy).length / arr.length * 100).toFixed(1)
     : null;
 
-  const regimeEffect = {
-    calm:     { n: allCalm.length,     nYes: yesCalm.length,     avgReturn: avgReturn(yesCalm),     precisionYes: precisionFn(yesCalm) },
-    volatile: { n: allVolatile.length, nYes: yesVolatile.length, avgReturn: avgReturn(yesVolatile), precisionYes: precisionFn(yesVolatile) },
-    delta: yesCalm.length >= 3 && yesVolatile.length >= 3
-      ? +((avgReturn(yesCalm) || 0) - (avgReturn(yesVolatile) || 0)).toFixed(1)
-      : null,
-  };
-
-  // ── Métricas por nivel de señal ──
-  const byLevel = {
-    strongBuy: {
-      n:          strongBuyResults.length,
-      precision:  precisionFn(strongBuyResults),
-      avgReturn:  avgReturn(strongBuyResults),
-      minReturn:  strongBuyResults.length > 0 ? +Math.min(...strongBuyResults.map(r => r.realReturn)).toFixed(1) : null,
-    },
-    buy: {
-      n:          buyResults.length,
-      precision:  precisionFn(buyResults),
-      avgReturn:  avgReturn(buyResults),
-      minReturn:  buyResults.length > 0 ? +Math.min(...buyResults.map(r => r.realReturn)).toFixed(1) : null,
-    },
-    no: {
-      n:          noResults.length,
-      precision:  precisionFn(noResults),  // % de NO que igualmente fueron buena compra
-      avgReturn:  avgReturn(noResults),
-      minReturn:  noResults.length > 0 ? +Math.min(...noResults.map(r => r.realReturn)).toFixed(1) : null,
-    },
-  };
+  // regimeEffect, holdBuckets y byLevel se calculan después del segundo pass (post-calibración)
 
   // ── Calibración de la señal PL bubble (σ solo, sin Hurst) ──
   // Busca el σ mínimo que, por sí solo, predice correcciones > 20% en 6 meses.
@@ -827,8 +790,36 @@ function runWalkForwardBacktest(prices, a, b, resMean, resStd, resFloor, evtCap,
     const futureP = prices[i + horizonSell]?.price;
     if (!futureP) continue;
     const ret6m = (futureP - p.price) / p.price * 100;
-    allSellResults.push({ date: p.date, sig: +sigLoc.toFixed(2), ret6m: +ret6m.toFixed(1), isGoodSell: ret6m < -20 });
+    allSellResults.push({ date: p.date, sig: +sigLoc.toFixed(2), ret6m: +ret6m.toFixed(1) });
   }
+
+  // ── Percentiles empíricos de correcciones históricas ──
+  // Usamos solo los retornos NEGATIVOS para calibrar umbrales de corrección.
+  // P25 de retornos negativos = una caída que ocurre en el 25% de los peores casos.
+  // P50 de retornos negativos = la corrección mediana entre los que sí corrigieron.
+  const overheatedReturns = allSellResults.map(r => r.ret6m).sort((a, b) => a - b);
+  const negativeReturns   = overheatedReturns.filter(r => r < 0);
+  const pctile = (arr, p) => arr.length > 0 ? arr[Math.floor(arr.length * p)] : null;
+
+  // P25 sobre todos los retornos (incluye positivos) — primer cuartil
+  const corrP25 = overheatedReturns.length >= 4
+    ? +pctile(overheatedReturns, 0.25).toFixed(1)
+    : -20;
+  // P50 sobre retornos negativos — corrección mediana entre quienes sí perdieron
+  const corrP50 = negativeReturns.length >= 4
+    ? +pctile(negativeReturns, 0.50).toFixed(1)
+    : -35;
+  // P75 de retornos negativos — corrección severa (peor cuarto)
+  const corrP75 = negativeReturns.length >= 4
+    ? +pctile(negativeReturns, 0.75).toFixed(1)
+    : -50;
+
+  // Actualizar isGoodSell con umbral dinámico P25 (en lugar del -20% fijo)
+  allSellResults.forEach(r => {
+    r.isGoodSell       = r.ret6m < corrP25;  // caída mayor al P25 — corrección significativa
+    r.isAnyLoss        = r.ret6m < 0;         // cualquier pérdida — dirección correcta
+    r.isSevereSell     = r.ret6m < corrP50;   // peor que la mediana
+  });
 
   const sigBubbleCandidates = [0.5, 0.7, 0.8, 1.0, 1.2, 1.5, 1.8, 2.0, 2.2];
 
@@ -869,26 +860,103 @@ function runWalkForwardBacktest(prices, a, b, resMean, resStd, resFloor, evtCap,
     }
   }
 
-  // Métricas PL bubble para la UI — Sell threshold
+  // ── Segundo pass de clasificación con umbrales calibrados ──
+  results.forEach((r, i) => { r.level = levelOf(r, i, calibratedBubbleSig, calibratedReduceSig); });
+
+  // Grupos basados en la clasificación final (post-calibración)
+  const strongBuyResults = results.filter(r => r.level === "strongBuy");
+  const buyResults       = results.filter(r => r.level === "buy");
+  const yesResults       = results.filter(r => r.level === "strongBuy" || r.level === "buy");
+  const noResults        = results.filter(r => r.level === "no");
+  const truePositives    = yesResults.filter(r => r.isGoodBuy).length;
+  const allPositives     = results.filter(r => r.isGoodBuy).length;
+
+  // Segmentación por régimen
+  const yesCalm     = yesResults.filter(r => r.regime === "calm");
+  const yesVolatile = yesResults.filter(r => r.regime === "volatile");
+  const allCalm     = results.filter(r => r.regime === "calm");
+  const allVolatile = results.filter(r => r.regime === "volatile");
+
+  const regimeEffect = {
+    calm:     { n: allCalm.length,     nYes: yesCalm.length,     avgReturn: avgReturn(yesCalm),     precisionYes: precisionFn(yesCalm) },
+    volatile: { n: allVolatile.length, nYes: yesVolatile.length, avgReturn: avgReturn(yesVolatile), precisionYes: precisionFn(yesVolatile) },
+    delta: yesCalm.length >= 3 && yesVolatile.length >= 3
+      ? +((avgReturn(yesCalm) || 0) - (avgReturn(yesVolatile) || 0)).toFixed(1)
+      : null,
+  };
+
+  // Hold subdividido
+  const noDiscount = noResults.filter(r => r.sig < 0);
+  const noPremium  = noResults.filter(r => r.sig >= 0);
+
+  const holdBuckets = [
+    { label: "σ < 0",     pts: noResults.filter(r => r.sig < 0)                    },
+    { label: "0 – 0.3",   pts: noResults.filter(r => r.sig >= 0   && r.sig < 0.3)  },
+    { label: "0.3 – 0.5", pts: noResults.filter(r => r.sig >= 0.3 && r.sig < 0.5)  },
+    { label: "0.5 – 0.8", pts: noResults.filter(r => r.sig >= 0.5 && r.sig < 0.8)  },
+    { label: "0.8+",      pts: noResults.filter(r => r.sig >= 0.8)                  },
+  ].map(b => ({
+    label: b.label,
+    n: b.pts.length,
+    avgReturn: avgReturn(b.pts),
+    minReturn: b.pts.length > 0 ? +Math.min(...b.pts.map(r => r.realReturn)).toFixed(1) : null,
+    precision: precisionFn(b.pts),
+    nBad: b.pts.filter(r => r.realReturn < -30).length,
+  }));
+
+  const byLevel = {
+    strongBuy: {
+      n:         strongBuyResults.length,
+      precision: precisionFn(strongBuyResults),
+      avgReturn: avgReturn(strongBuyResults),
+      minReturn: strongBuyResults.length > 0 ? +Math.min(...strongBuyResults.map(r => r.realReturn)).toFixed(1) : null,
+    },
+    buy: {
+      n:         buyResults.length,
+      precision: precisionFn(buyResults),
+      avgReturn: avgReturn(buyResults),
+      minReturn: buyResults.length > 0 ? +Math.min(...buyResults.map(r => r.realReturn)).toFixed(1) : null,
+    },
+    no: {
+      n:         noResults.length,
+      precision: precisionFn(noResults),
+      avgReturn: avgReturn(noResults),
+      minReturn: noResults.length > 0 ? +Math.min(...noResults.map(r => r.realReturn)).toFixed(1) : null,
+    },
+    holdDiscount: {
+      n:         noDiscount.length,
+      precision: precisionFn(noDiscount),
+      avgReturn: avgReturn(noDiscount),
+      minReturn: noDiscount.length > 0 ? +Math.min(...noDiscount.map(r => r.realReturn)).toFixed(1) : null,
+    },
+    holdPremium: {
+      n:         noPremium.length,
+      precision: precisionFn(noPremium),
+      avgReturn: avgReturn(noPremium),
+      minReturn: noPremium.length > 0 ? +Math.min(...noPremium.map(r => r.realReturn)).toFixed(1) : null,
+    },
+  };
+
+  // Métricas PL bubble — con percentiles dinámicos
   const bubblePoints  = allSellResults.filter(r => r.sig > calibratedBubbleSig);
   const reducePoints  = allSellResults.filter(r => r.sig > calibratedReduceSig && r.sig <= calibratedBubbleSig);
-  const avgRetFn = arr => arr.length > 0 ? +(arr.reduce((s,r)=>s+r.ret6m,0)/arr.length).toFixed(1) : null;
-  const pct20Fn  = arr => arr.length > 0 ? +(arr.filter(r=>r.isGoodSell).length/arr.length*100).toFixed(1) : null;
+  const avgRetFn  = arr => arr.length > 0 ? +(arr.reduce((s,r)=>s+r.ret6m,0)/arr.length).toFixed(1) : null;
+  const pct20Fn   = arr => arr.length > 0 ? +(arr.filter(r=>r.isGoodSell).length/arr.length*100).toFixed(1) : null;
+  const pctAnyFn  = arr => arr.length > 0 ? +(arr.filter(r=>r.isAnyLoss).length/arr.length*100).toFixed(1) : null;
+  const pctSevFn  = arr => arr.length > 0 ? +(arr.filter(r=>r.isSevereSell).length/arr.length*100).toFixed(1) : null;
+
+  const mkPlRow = arr => ({
+    n: arr.length,
+    avgRet6m:    avgRetFn(arr),
+    pct20:       pct20Fn(arr),
+    pctAnyLoss:  pctAnyFn(arr),
+    pctSevere:   pctSevFn(arr),
+    maxDrawdown: arr.length > 0 ? +Math.min(...arr.map(r=>r.ret6m)).toFixed(1) : null,
+  });
+
   const plBubbleMetrics = {
-    sell: {
-      n: bubblePoints.length,
-      avgRet6m: avgRetFn(bubblePoints),
-      pct20: pct20Fn(bubblePoints),
-      maxDrawdown: bubblePoints.length > 0 ? +Math.min(...bubblePoints.map(r=>r.ret6m)).toFixed(1) : null,
-      sigThreshold: calibratedBubbleSig,
-    },
-    reduce: {
-      n: reducePoints.length,
-      avgRet6m: avgRetFn(reducePoints),
-      pct20: pct20Fn(reducePoints),
-      maxDrawdown: reducePoints.length > 0 ? +Math.min(...reducePoints.map(r=>r.ret6m)).toFixed(1) : null,
-      sigThreshold: calibratedReduceSig,
-    },
+    sell:   { ...mkPlRow(bubblePoints),  sigThreshold: calibratedBubbleSig },
+    reduce: { ...mkPlRow(reducePoints),  sigThreshold: calibratedReduceSig },
   };
 
   // ── Calibración de thresholds de divergencias Hurst por grid search ──
@@ -999,8 +1067,11 @@ function runWalkForwardBacktest(prices, a, b, resMean, resStd, resFloor, evtCap,
 
       const maxDrawdown = arr => arr.length > 0 ? +Math.min(...arr.map(r => r.ret6m)).toFixed(1) : null;
       const avgRet      = arr => arr.length > 0 ? +(arr.reduce((s,r)=>s+r.ret6m,0)/arr.length).toFixed(1) : null;
-      const pct20       = arr => arr.length > 0 ? +(arr.filter(r=>r.isGoodSell).length/arr.length*100).toFixed(1) : null;
-      const precFn      = arr => arr.length > 0 ? +(arr.filter(r=>r.isGoodSell).length/arr.length*100).toFixed(1) : null;
+      // Tres métricas dinámicas — umbrales basados en percentiles históricos
+      const pctAnyLoss   = arr => arr.length > 0 ? +(arr.filter(r=>r.isAnyLoss).length/arr.length*100).toFixed(1)    : null;
+      const pctSig       = arr => arr.length > 0 ? +(arr.filter(r=>r.isGoodSell).length/arr.length*100).toFixed(1)   : null; // P25
+      const pctSevere    = arr => arr.length > 0 ? +(arr.filter(r=>r.isSevereSell).length/arr.length*100).toFixed(1) : null; // P50
+      const precFn       = pctSig; // compatibilidad
 
       const sellAvg  = avgRet(sell3);
       const baseAvg  = avgRet(sellResults);
@@ -1008,11 +1079,21 @@ function runWalkForwardBacktest(prices, a, b, resMean, resStd, resFloor, evtCap,
         ? +(baseAvg - sellAvg).toFixed(1)
         : null;
 
+      const mkRow = arr => ({
+        n: arr.length,
+        precision: precFn(arr),
+        avgRet6m:  avgRet(arr),
+        maxDrawdown: maxDrawdown(arr),
+        pct20:     pctSig(arr),      // renombrado internamente, ahora = P25 dinámico
+        pctAnyLoss: pctAnyLoss(arr),
+        pctSevere:  pctSevere(arr),
+      });
+
       return {
-        sell:       { n: sell3.length,    precision: precFn(sell3),    avgRet6m: avgRet(sell3),    maxDrawdown: maxDrawdown(sell3),    pct20: pct20(sell3)    },
-        reduce:     { n: sell2.length,    precision: precFn(sell2),    avgRet6m: avgRet(sell2),    maxDrawdown: maxDrawdown(sell2),    pct20: pct20(sell2)    },
-        noSignal:   { n: noSignal.length, precision: precFn(noSignal), avgRet6m: avgRet(noSignal), maxDrawdown: maxDrawdown(noSignal), pct20: pct20(noSignal) },
-        allOverheat:{ n: sellResults.length, precision: precFn(sellResults), avgRet6m: avgRet(sellResults), maxDrawdown: maxDrawdown(sellResults), pct20: pct20(sellResults) },
+        sell:       mkRow(sell3),
+        reduce:     mkRow(sell2),
+        noSignal:   mkRow(noSignal),
+        allOverheat: mkRow(sellResults),
         signalDelta,
       };
     })(),
@@ -1032,11 +1113,10 @@ function runWalkForwardBacktest(prices, a, b, resMean, resStd, resFloor, evtCap,
     const periodResults = results.filter(r => r.date >= period.start && r.date <= period.end);
     if (periodResults.length < 3) return { label: period.label, n: 0, precision: null, avgReturn: null };
 
-    const yesP = periodResults.filter(r =>
-      r.sig < bestThresholds.sig &&
-      r.pLoss1y < bestThresholds.pLoss1y &&
-      r.pFV > bestThresholds.pFV
-    );
+    // Usar r.level (clasificación final del score continuo) en lugar de
+    // thresholds conjuntivos — el cross-val debe reflejar el mismo modelo
+    // que muestra el veredicto al usuario.
+    const yesP = periodResults.filter(r => r.level === "strongBuy" || r.level === "buy");
     const tpP = yesP.filter(r => r.isGoodBuy).length;
 
     return {
@@ -1089,17 +1169,47 @@ function runWalkForwardBacktest(prices, a, b, resMean, resStd, resFloor, evtCap,
     nNo: noResults.length,
     avgReturnYes: avgReturn(yesResults),
     avgReturnNo:  avgReturn(noResults),
+    avgReturnHold: avgReturn(noResults),
+    avgReturnSell: (() => {
+      const sellPts = results.filter(r => r.level === "sell" || r.level === "reduce");
+      return avgReturn(sellPts);
+    })(),
     baseRate,
     regimeEffect,
     byLevel,
+    holdBuckets,
     sellBacktest,
     sellThresholds: bestSellThresholds,
     plBubbleMetrics,
     calibratedBubbleSig,
     calibratedReduceSig,
+    correctionPercentiles: { p25: corrP25, p50: corrP50, p75: corrP75, n: overheatedReturns.length },
     sigmaBuckets,
     crossValidation,
     stabilityDelta,
+    // Retorno medio incondicional — contexto informativo
+    unconditionalMean: results.length > 0
+      ? +(results.reduce((s, r) => s + r.realReturn, 0) / results.length).toFixed(1)
+      : 0,
+    // Calibración probabilística: ¿cuando el modelo dice "alto riesgo",
+    // efectivamente pierde más gente? Agrupamos por σ y comparamos
+    // loss rate real vs P(pérdida) predicho por el MC.
+    calibrationBuckets: [
+      { label: "Deep value (σ < -1)",      min: -99,  max: -1.0 },
+      { label: "Discount (σ -1 to -0.5)",  min: -1.0, max: -0.5 },
+      { label: "Neutral (σ ±0.5)",         min: -0.5, max:  0.5 },
+      { label: "Elevated (σ 0.5 to 1)",    min:  0.5, max:  1.0 },
+      { label: "Overheated (σ > 1)",       min:  1.0, max: 99   },
+    ].map(b => {
+      const pts = results.filter(r => r.sig > b.min && r.sig <= b.max);
+      if (pts.length === 0) return { ...b, n: 0, lossRate: null, avgReturn: null, pLossAvg: null };
+      const n = pts.length;
+      const nLoss   = pts.filter(r => r.realReturn < 0).length;
+      const lossRate = +(nLoss / n * 100).toFixed(1);
+      const ar       = +(pts.reduce((s, r) => s + r.realReturn, 0) / n).toFixed(1);
+      const pLossAvg = +(pts.reduce((s, r) => s + r.pLoss1y, 0) / n).toFixed(1);
+      return { ...b, n, lossRate, avgReturn: ar, pLossAvg };
+    }),
     results,
   };
 }
@@ -3266,16 +3376,12 @@ export default function MMARDashboard() {
       ? `Bitcoin is above the reduce threshold (σ ${sig.toFixed(2)} > ${reduceSigThr}). Corrections happen more than a third of the time from here — consider reducing new exposure.`
       : `Two momentum warning signals active at elevated price. Early signs of exhaustion.`;
 
+    // ── Veredicto: señales de venta tienen prioridad sobre compra ──
+    // Orden: Sell → Reduce → Strong Buy → Buy → Hold
+    // Razón: σ > umbral es una señal estructural fuerte — no debe ser anulada
+    // por un buy score positivo que viene de otros factores (pFV, pLoss).
     let answer, answerColor, answerSub, confidence, subtitle, subtitleColor;
-    if (isStrongBuy) {
-      answer = "YES"; answerColor = "#27AE60"; confidence = "high";
-      subtitle = "Strong Buy"; subtitleColor = "#1B8A4A";
-      answerSub = "The model's strongest buy configuration. Risk is low and the upside case is well-supported.";
-    } else if (isBuy) {
-      answer = "YES"; answerColor = "#27AE60"; confidence = "moderate";
-      subtitle = "Buy"; subtitleColor = "#27AE60";
-      answerSub = "The odds are in your favor. Both the structural and probabilistic picture support entry.";
-    } else if (isSellSignal) {
+    if (isSellSignal) {
       answer = "NO"; answerColor = "#EB5757"; confidence = "high";
       subtitle = "Sell"; subtitleColor = "#EB5757";
       answerSub = sellReason;
@@ -3283,14 +3389,20 @@ export default function MMARDashboard() {
       answer = "NO"; answerColor = "#F2994A"; confidence = "moderate";
       subtitle = "Reduce"; subtitleColor = "#F2994A";
       answerSub = reduceReason;
-    } else if (buyScore > 0 || (nCondsMet >= 2 && cond1_discount)) {
-      answer = "NO"; answerColor = "#F2994A"; confidence = "moderate";
-      subtitle = "Wait"; subtitleColor = "#F2994A";
-      answerSub = "Some positive signals but not enough conviction yet. Better risk/reward likely ahead.";
+    } else if (isStrongBuy) {
+      answer = "YES"; answerColor = "#27AE60"; confidence = "high";
+      subtitle = "Strong Buy"; subtitleColor = "#1B8A4A";
+      answerSub = "The model's strongest buy configuration. Risk is low and the upside case is well-supported.";
+    } else if (isBuy) {
+      answer = "YES"; answerColor = "#27AE60"; confidence = "moderate";
+      subtitle = "Buy"; subtitleColor = "#27AE60";
+      answerSub = "The odds are in your favor. Both the structural and probabilistic picture support entry.";
     } else {
-      answer = "NO"; answerColor = "#F2994A"; confidence = "low";
+      answer = "NO"; answerColor = "#E8A838"; confidence = "low";
       subtitle = "Hold"; subtitleColor = "#E8A838";
-      answerSub = "Not a clear entry or exit signal. Fair price or insufficient margin of safety.";
+      answerSub = sig > 0
+        ? "Price is above fair value with no buy signal. Risk/return is deteriorating — not a good entry. If you hold, that's fine. If you don't, wait."
+        : "No clear signal in either direction. Fair value zone — patience required.";
     }
 
     // ── Panel de signals: dos secciones separadas ──
@@ -3304,7 +3416,7 @@ export default function MMARDashboard() {
         source: "pl",
       },
       {
-        name: "Worst case (RANSAC)",
+        name: "Worst case floor",
         value: `${fmtK(supportPrice)}`,
         threshold: `−${distToSupportPct.toFixed(0)}% from today`,
         met: distToSupportPct > 0,
@@ -3437,7 +3549,7 @@ export default function MMARDashboard() {
         worstCase: supportAt(t0 + 1095),
         verdict: verdict3y,
         verdictColor: verdict3yColor,
-        answer: verdict3y === "Sell" || verdict3y === "Reduce" || verdict3y === "Hold" || verdict3y === "Wait" ? "NO" : "YES",
+        answer: verdict3y === "Sell" || verdict3y === "Reduce" || verdict3y === "Hold" ? "NO" : "YES",
         answerColor: verdict3y === "Strong Buy" || verdict3y === "Buy" ? "#27AE60" : verdict3y === "Sell" ? "#EB5757" : "#F2994A",
       },
     ];
@@ -3674,7 +3786,7 @@ export default function MMARDashboard() {
             )}
 
             {/* Signal breakdown — dos secciones */}
-            <Toggle label="What's driving this" open={openSections.drivers} onToggle={() => toggleSection("drivers")} count={`${buyVerdict.nCondsMet}/4`}>
+            <Toggle label="What's driving this" open={openSections.drivers} onToggle={() => toggleSection("drivers")} count={buyVerdict.subtitle}>
 
               {/* Sección PL */}
               <div style={{ marginBottom: 16 }}>
@@ -3716,7 +3828,7 @@ export default function MMARDashboard() {
 
               <div style={{ marginTop: 12, padding: "10px 12px", background: "#F7F6F3", borderRadius: 6, fontSize: 11, color: "#9B9A97", lineHeight: 1.8 }}>
                 <div>
-                  <strong style={{ color: "#37352F" }}>How to read this:</strong> YES requires all 4 conditions simultaneously — discount (PL), low loss risk, fair value reachable, and floor breach contained (all MC). SELL requires overheated price + all 3 Hurst divergences. Thresholds calibrated by walk-forward backtest.
+                  <strong style={{ color: "#37352F" }}>How to read this:</strong> The buy signal scores four factors — price discount, loss risk, probability of reaching fair value, and floor proximity — using weights calibrated by backtest. The sell signal is separate: σ above threshold (Power Law) or Hurst momentum divergences. Either sell path alone is sufficient.
                   {buyVerdict.thr ? <span style={{ color: "#BFBFBA" }}> · σ &lt; {buyVerdict.thr.sig} · P(loss) &lt; {buyVerdict.thr.pLoss?.toFixed(0)}% · P(FV) &gt; {buyVerdict.thr.pFV?.toFixed(0)}%</span> : null}
                 </div>
                 {buyVerdict.p30CI ? (
@@ -3728,7 +3840,7 @@ export default function MMARDashboard() {
                 {backtestResults?.precision != null && (
                   <div style={{ marginTop: 4, paddingTop: 4, borderTop: "1px solid #E8E5E0" }}>
                     <strong style={{ color: "#37352F" }}>Walk-forward backtest:</strong>{" "}
-                    YES precision: {backtestResults.precision}% · Avg return YES: {backtestResults.avgReturnYes}% vs NO: {backtestResults.avgReturnNo}% · n={backtestResults.nYes + backtestResults.nNo}
+                    Buy precision: {backtestResults.precision}% · Avg return buy: +{backtestResults.avgReturnYes}% · Hold: {backtestResults.avgReturnHold > 0 ? "+" : ""}{backtestResults.avgReturnHold}% · n={backtestResults.nYes + backtestResults.nNo}
                     <span style={{ color: "#BFBFBA", marginLeft: 4 }}>· H and λ² fixed at full-period means</span>
                   </div>
                 )}
@@ -3846,30 +3958,39 @@ export default function MMARDashboard() {
                     const br = parseFloat(backtestResults.baseRate);
                     const diff = br ? +(p - br).toFixed(1) : null;
                     const avgY = backtestResults.avgReturnYes;
-                    const avgN = backtestResults.avgReturnNo;
+                    const avgHold = backtestResults.avgReturnHold;
+                    const avgSell = backtestResults.avgReturnSell;
+                    const bl = backtestResults.byLevel;
+                    const nHold = bl?.no?.n ?? 0;
+                    const nSell = (backtestResults.plBubbleMetrics?.sell?.n ?? 0) + (backtestResults.plBubbleMetrics?.reduce?.n ?? 0);
                     const stable = backtestResults.stabilityDelta != null && backtestResults.stabilityDelta < 15;
                     return (
                       <>
                         <p style={{ margin: "0 0 10px" }}>
                           We tested this signal against every point in Bitcoin's history since 2016. When the model said <strong>buy</strong>, the price was higher 12 months later <strong style={{ color: p > 70 ? "#27AE60" : p > 55 ? "#F2994A" : "#EB5757" }}>{p}% of the time</strong>.
                           {br != null && diff != null && (
-                            <span style={{ color: "#9B9A97" }}> For context, Bitcoin goes up in any random 12-month period {br}% of the time — so the signal adds <strong style={{ color: diff > 0 ? "#27AE60" : "#EB5757" }}>{diff > 0 ? "+" : ""}{diff} percentage points</strong> on top of that.</span>
+                            <span style={{ color: "#9B9A97" }}> For context, Bitcoin goes up in any random 12-month period {br}% of the time — so the buy signal adds <strong style={{ color: diff > 0 ? "#27AE60" : "#EB5757" }}>{diff > 0 ? "+" : ""}{diff} percentage points</strong> on top of that.</span>
                           )}
                         </p>
-                        {avgY != null && avgN != null && (
+                        {avgY != null && (
                           <p style={{ margin: "0 0 10px" }}>
-                            When the model said <strong>buy</strong>, the average 12-month return was <strong style={{ color: "#27AE60" }}>+{avgY}%</strong>. When it said <strong>no</strong>, the average was <strong style={{ color: avgN > 0 ? "#9B9A97" : "#EB5757" }}>{avgN > 0 ? "+" : ""}{avgN}%</strong>.
+                            When the model said <strong>buy</strong>, the average 12-month return was <strong style={{ color: "#27AE60" }}>+{avgY}%</strong>.
+                            {nHold > 0 && avgHold != null && (
+                              <span> During <strong>hold</strong> periods ({nHold} observations), the average return was <strong style={{ color: avgHold > 0 ? "#9B9A97" : "#EB5757" }}>{avgHold > 0 ? "+" : ""}{avgHold}%</strong> — positive on average but with far more variance and worse downside risk.</span>
+                            )}
+                            {nSell > 0 && avgSell != null && (
+                              <span> When the <strong>sell/reduce</strong> signal fired ({nSell} observations), the average 6-month return was <strong style={{ color: "#EB5757" }}>{avgSell > 0 ? "+" : ""}{avgSell}%</strong>.</span>
+                            )}
                           </p>
                         )}
                         {calibratedWeights && (
                           <p style={{ margin: "0 0 10px", color: "#9B9A97", fontSize: 13 }}>
-                            The model weighs four factors: how cheap Bitcoin is (×{calibratedWeights.w1}), how unlikely a loss is (×{calibratedWeights.w2}), how likely it is to reach fair value (×{calibratedWeights.w3}), and how far it is from the worst case floor (×{calibratedWeights.w4}). These weights came from the historical data, not from us.
-                            {calibratedWeights.w2 > calibratedWeights.w1 && <span> The risk factor matters more than the discount — which means the model can say buy even when Bitcoin isn't deeply cheap, if the risk is very low.</span>}
+                            The buy signal weighs four factors: how cheap Bitcoin is (×{calibratedWeights.w1}), how unlikely a loss is (×{calibratedWeights.w2}), how likely it is to reach fair value (×{calibratedWeights.w3}), and how far it is from the worst case floor (×{calibratedWeights.w4}). The sell signal uses separate σ thresholds calibrated from historical correction data.
                           </p>
                         )}
                         <p style={{ margin: 0, color: "#9B9A97", fontSize: 13 }}>
                           {stable
-                            ? "✓ The signal worked consistently across all Bitcoin market cycles — it's not just tuned to one good period."
+                            ? "✓ The buy signal worked consistently across all Bitcoin market cycles — it's not just tuned to one good period."
                             : "⚠ Performance varied across different market cycles — treat this as a guide, not a guarantee."}
                         </p>
                       </>
@@ -3881,13 +4002,14 @@ export default function MMARDashboard() {
               {/* ── Detalles para quien quiere profundizar ── */}
               <Toggle label="Show detailed numbers" open={openSections.validationDetails} onToggle={() => toggleSection("validationDetails")}>
 
-                {/* Métricas principales */}
+                {/* Métricas buy signal */}
+                <div style={{ fontSize: 10, color: "#BFBFBA", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600, marginBottom: 8 }}>Buy signal — 12 month horizon</div>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 10, marginBottom: 14 }}>
                   {[
                     { label: "Buy accuracy", value: `${backtestResults.precision}%`, desc: "Buy signals that were right", color: backtestResults.precision > 60 ? "#27AE60" : "#F2994A" },
                     { label: "Return when buy", value: `+${backtestResults.avgReturnYes}%`, desc: "Avg 12m return after buy signal", color: "#27AE60" },
-                    { label: "Return when no", value: `${backtestResults.avgReturnNo > 0 ? "+" : ""}${backtestResults.avgReturnNo}%`, desc: "Avg 12m return after no signal", color: "#9B9A97" },
-                    { label: "Data points", value: `${backtestResults.nYes + backtestResults.nNo}`, desc: `${backtestResults.nYes} buy · ${backtestResults.nNo} no`, color: "#9B9A97" },
+                    { label: "Return during hold", value: `${backtestResults.avgReturnHold > 0 ? "+" : ""}${backtestResults.avgReturnHold}%`, desc: "Avg 12m return during hold periods", color: "#9B9A97" },
+                    { label: "Data points", value: `${backtestResults.nYes + backtestResults.nNo}`, desc: `${backtestResults.nYes} buy · ${backtestResults.nNo} hold`, color: "#9B9A97" },
                   ].map(({ label, value, desc, color }) => (
                     <div key={label} style={{ background: "#FAFAF8", borderRadius: 6, border: "1px solid #E8E5E0", padding: "10px 12px" }}>
                       <div style={{ fontSize: 10, color: "#9B9A97", marginBottom: 3 }}>{label}</div>
@@ -3896,6 +4018,57 @@ export default function MMARDashboard() {
                     </div>
                   ))}
                 </div>
+
+                {/* Métricas sell signal */}
+                {backtestResults.plBubbleMetrics && (
+                  <>
+                    <div style={{ fontSize: 10, color: "#BFBFBA", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600, marginBottom: 8 }}>Sell signal — 6 month horizon</div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 10, marginBottom: 14 }}>
+                      {(() => {
+                        const sell = backtestResults.plBubbleMetrics.sell;
+                        const reduce = backtestResults.plBubbleMetrics.reduce;
+                        const nSell = sell?.n ?? 0;
+                        const nReduce = reduce?.n ?? 0;
+                        const nFellSell = sell?.pct20 != null ? Math.round(parseFloat(sell.pct20) / 100 * nSell) : null;
+                        const nFellReduce = reduce?.pct20 != null ? Math.round(parseFloat(reduce.pct20) / 100 * nReduce) : null;
+                        const sellAcc = nSell > 0 && nFellSell != null ? +(nFellSell / nSell * 100).toFixed(1) : null;
+                        const reduceAcc = nReduce > 0 && nFellReduce != null ? +(nFellReduce / nReduce * 100).toFixed(1) : null;
+                        return [
+                          {
+                            label: "Sell accuracy",
+                            value: sellAcc != null ? `${sellAcc}%` : "—",
+                            desc: `σ > ${backtestResults.calibratedBubbleSig} · fell >P25 within 6m`,
+                            color: sellAcc > 50 ? "#27AE60" : "#F2994A",
+                          },
+                          {
+                            label: "Return after sell",
+                            value: sell?.avgRet6m != null ? `${sell.avgRet6m > 0 ? "+" : ""}${sell.avgRet6m}%` : "—",
+                            desc: "Avg 6m return after sell signal",
+                            color: sell?.avgRet6m < 0 ? "#27AE60" : "#EB5757",
+                          },
+                          {
+                            label: "Reduce accuracy",
+                            value: reduceAcc != null ? `${reduceAcc}%` : "—",
+                            desc: `σ > ${backtestResults.calibratedReduceSig} · fell >P25 within 6m`,
+                            color: reduceAcc > 40 ? "#F2994A" : "#9B9A97",
+                          },
+                          {
+                            label: "Sell data points",
+                            value: `${nSell + nReduce}`,
+                            desc: `${nSell} sell · ${nReduce} reduce`,
+                            color: "#9B9A97",
+                          },
+                        ].map(({ label, value, desc, color }) => (
+                          <div key={label} style={{ background: "#FFF9F9", borderRadius: 6, border: "1px solid #FECACA", padding: "10px 12px" }}>
+                            <div style={{ fontSize: 10, color: "#9B9A97", marginBottom: 3 }}>{label}</div>
+                            <div style={{ fontSize: 18, fontWeight: 700, color, fontFamily: "'DM Mono', monospace" }}>{value}</div>
+                            <div style={{ fontSize: 10, color: "#BFBFBA", marginTop: 2 }}>{desc}</div>
+                          </div>
+                        ));
+                      })()}
+                    </div>
+                  </>
+                )}
 
                 {/* Thresholds calibrados */}
                 {calibratedThresholds && (
@@ -3917,145 +4090,116 @@ export default function MMARDashboard() {
                   </div>
                 )}
 
-                {/* Signal strength breakdown */}
+                {/* Tabla unificada — espectro completo de señales */}
                 {backtestResults.byLevel && (
                   <div style={{ marginBottom: 12 }}>
-                    <div style={{ fontSize: 10, color: "#BFBFBA", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600, marginBottom: 8 }}>Results by signal strength</div>
+                    <div style={{ fontSize: 10, color: "#BFBFBA", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600, marginBottom: 6 }}>
+                      Signal spectrum — from strong buy to sell
+                    </div>
+
+                    {/* Percentiles contexto */}
+                    {backtestResults.correctionPercentiles && (
+                      <div style={{ fontSize: 11, color: "#9B9A97", marginBottom: 8, lineHeight: 1.5 }}>
+                        Historical correction distribution ({backtestResults.correctionPercentiles.n} overheated periods):
+                        {" "}<span style={{ color: "#9B9A97" }}>any loss:</span> below 0% ·
+                        {" "}<span style={{ color: "#F2994A" }}>significant (P25):</span> below {backtestResults.correctionPercentiles.p25}% ·
+                        {" "}<span style={{ color: "#EB5757" }}>severe (P50):</span> below {backtestResults.correctionPercentiles.p50}%
+                      </div>
+                    )}
+
                     <div style={{ border: "1px solid #E8E5E0", borderRadius: 6, overflow: "hidden" }}>
                       <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
                         <thead>
                           <tr style={{ background: "#F7F6F3" }}>
-                            {["Signal", "Times seen", "Right", "Avg return", "Worst"].map(h => (
+                            {["Signal", "n", "Worked", "Avg return", "Worst"].map(h => (
                               <th key={h} style={{ padding: "7px 10px", textAlign: h === "Signal" ? "left" : "right", color: "#9B9A97", fontWeight: 500, fontSize: 11, borderBottom: "1px solid #E8E5E0" }}>{h}</th>
                             ))}
                           </tr>
-                        </thead>
-                        <tbody>
-                          {[
-                            { label: "Strong Buy", key: "strongBuy", color: "#1B8A4A" },
-                            { label: "Buy",         key: "buy",       color: "#27AE60" },
-                            { label: "No signal",   key: "no",        color: "#9B9A97" },
-                          ].map(({ label, key, color }) => {
-                            const d = backtestResults.byLevel[key];
-                            if (!d || d.n === 0) return null;
-                            return (
-                              <tr key={key} style={{ borderBottom: "1px solid #F1F1EF" }}>
-                                <td style={{ padding: "8px 10px", fontWeight: 600, color }}>{label}</td>
-                                <td style={{ padding: "8px 10px", textAlign: "right", color: "#9B9A97", fontFamily: "'DM Mono', monospace" }}>{d.n}</td>
-                                <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'DM Mono', monospace", color: d.precision > 70 ? "#27AE60" : d.precision > 50 ? "#F2994A" : "#EB5757" }}>
-                                  {d.precision ?? "—"}%
-                                </td>
-                                <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'DM Mono', monospace", color: d.avgReturn > 0 ? "#27AE60" : "#EB5757" }}>
-                                  {d.avgReturn != null ? `${d.avgReturn > 0 ? "+" : ""}${d.avgReturn}%` : "—"}
-                                </td>
-                                <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'DM Mono', monospace", color: d.minReturn >= 0 ? "#27AE60" : "#EB5757", fontSize: 11 }}>
-                                  {d.minReturn != null ? `${d.minReturn > 0 ? "+" : ""}${d.minReturn}%` : "—"}
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-                    <div style={{ fontSize: 11, color: "#BFBFBA", marginTop: 5, lineHeight: 1.5 }}>
-                      "Right" = price was higher after 12 months. "Worst" = the worst 12-month return observed after this signal.
-                      {backtestResults.byLevel.strongBuy?.n < 5 && <span style={{ color: "#F2994A" }}> Strong Buy has few historical examples — take it with a grain of salt.</span>}
-                    </div>
-                  </div>
-                )}
-
-                {/* Sell signal validation */}
-                {backtestResults.sellBacktest?.metrics && (
-                  <div style={{ marginBottom: 12 }}>
-                    <div style={{ fontSize: 10, color: "#BFBFBA", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600, marginBottom: 8 }}>Do the sell warnings add value over plain overheating?</div>
-
-                    {/* PL bubble signal — Sell y Reduce por separado */}
-                    {backtestResults.plBubbleMetrics && (
-                      <div style={{ background: "#FFF9F9", border: "1px solid #FECACA", borderRadius: 6, padding: "10px 12px", marginBottom: 10 }}>
-                        <div style={{ fontSize: 11, fontWeight: 600, color: "#9B9A97", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>Power Law signal — calibrated thresholds</div>
-                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                          {[
-                            { label: `Sell (σ > ${backtestResults.calibratedBubbleSig})`, data: backtestResults.plBubbleMetrics.sell, color: "#EB5757" },
-                            { label: `Reduce (σ > ${backtestResults.calibratedReduceSig})`, data: backtestResults.plBubbleMetrics.reduce, color: "#F2994A" },
-                          ].map(({ label, data, color }) => (
-                            <div key={label} style={{ background: "#FFF", borderRadius: 6, border: "1px solid #F1F1EF", padding: "8px 10px" }}>
-                              <div style={{ fontSize: 11, fontWeight: 600, color, marginBottom: 6 }}>{label}</div>
-                              <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-                                {[
-                                  { k: "Events", v: data?.n ?? 0 },
-                                  { k: "Fell >20%", v: data?.n > 0 && data?.pct20 != null ? `${Math.round(parseFloat(data.pct20)/100*(data.n))}/${data.n}` : "—" },
-                                  { k: "Avg 6m", v: data?.avgRet6m != null ? `${data.avgRet6m > 0 ? "+" : ""}${data.avgRet6m}%` : "—" },
-                                ].map(({ k, v }) => (
-                                  <div key={k} style={{ display: "flex", justifyContent: "space-between" }}>
-                                    <span style={{ fontSize: 11, color: "#9B9A97" }}>{k}</span>
-                                    <span style={{ fontSize: 11, fontFamily: "'DM Mono', monospace", color: "#37352F" }}>{v}</span>
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                        <div style={{ fontSize: 11, color: "#BFBFBA", marginTop: 6 }}>Both thresholds calibrated by grid search from historical correction data — not chosen by hand.</div>
-                      </div>
-                    )}
-
-                    {/* Delta headline */}
-                    {backtestResults.sellBacktest.metrics.signalDelta != null && (
-                      <div style={{ background: backtestResults.sellBacktest.metrics.signalDelta > 5 ? "#0f2318" : "#1a1a0a", border: `1px solid ${backtestResults.sellBacktest.metrics.signalDelta > 5 ? "#1a3a28" : "#3a3a1a"}`, borderRadius: 8, padding: "12px 14px", marginBottom: 12 }}>
-                        <div style={{ fontSize: 13, color: "#e8e5e0", lineHeight: 1.7 }}>
-                          {backtestResults.sellBacktest.metrics.signalDelta > 5
-                            ? <>When the sell signal fired, Bitcoin returned <strong style={{ color: "#f87171" }}>{backtestResults.sellBacktest.metrics.sell?.avgRet6m != null ? (backtestResults.sellBacktest.metrics.sell.avgRet6m > 0 ? "+" : "") + backtestResults.sellBacktest.metrics.sell.avgRet6m + "%" : "–"}</strong> over the following 6 months — vs <strong style={{ color: "#9B9A97" }}>{backtestResults.sellBacktest.metrics.allOverheat?.avgRet6m != null ? (backtestResults.sellBacktest.metrics.allOverheat.avgRet6m > 0 ? "+" : "") + backtestResults.sellBacktest.metrics.allOverheat.avgRet6m + "%" : "–"}</strong> for all overheated periods. The divergences added <strong style={{ color: "#4ade80" }}>{backtestResults.sellBacktest.metrics.signalDelta}pp</strong> of signal beyond simply being overheated.</>
-                            : <>When the sell signal fired, returns were not significantly worse than the overheated baseline (<strong style={{ color: "#9B9A97" }}>{backtestResults.sellBacktest.metrics.signalDelta}pp difference</strong>). The divergences may not add meaningful signal beyond plain overheating — or the sample is too small to tell.</>
-                          }
-                          {backtestResults.sellBacktest.note && <span style={{ color: "#a0a010" }}> {backtestResults.sellBacktest.note}</span>}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Comparison table */}
-                    <div style={{ border: "1px solid #E8E5E0", borderRadius: 6, overflow: "hidden" }}>
-                      <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
-                        <thead>
-                          <tr style={{ background: "#F7F6F3" }}>
-                            {["When…", "Times seen", "Fell >20%", "Avg return", "Worst"].map(h => (
-                              <th key={h} style={{ padding: "7px 10px", textAlign: h === "When…" ? "left" : "right", color: "#9B9A97", fontWeight: 500, fontSize: 11, borderBottom: "1px solid #E8E5E0" }}>{h}</th>
-                            ))}
+                          <tr style={{ background: "#FAFAF8" }}>
+                            <th colSpan={2} style={{ padding: "2px 10px", textAlign: "left", color: "#BFBFBA", fontSize: 9, fontWeight: 400, borderBottom: "1px solid #E8E5E0" }}>Buy signals — 12m · Worked = price higher</th>
+                            <th colSpan={3} style={{ padding: "2px 10px", textAlign: "right", color: "#BFBFBA", fontSize: 9, fontWeight: 400, borderBottom: "1px solid #E8E5E0" }}></th>
                           </tr>
                         </thead>
                         <tbody>
-                          {[
-                            { label: "Sell signal (3 warnings)", data: backtestResults.sellBacktest.metrics.sell,       color: "#EB5757", isBaseline: false },
-                            { label: "Reduce signal (2 warnings)", data: backtestResults.sellBacktest.metrics.reduce,   color: "#F2994A", isBaseline: false },
-                            { label: "Overheated, no warning",    data: backtestResults.sellBacktest.metrics.noSignal,  color: "#9B9A97", isBaseline: true  },
-                            { label: "All overheated (baseline)", data: backtestResults.sellBacktest.metrics.allOverheat, color: "#BFBFBA", isBaseline: true },
-                          ].map(({ label, data, color, isBaseline }) => {
-                            // Siempre mostrar, incluso con n=0
-                            const n = data?.n || 0;
-                            const nFell = data?.pct20 != null ? Math.round(parseFloat(data.pct20) / 100 * n) : null;
-                            return (
-                              <tr key={label} style={{ borderBottom: "1px solid #F1F1EF", background: isBaseline ? "#FAFAF8" : "#FFF" }}>
-                                <td style={{ padding: "8px 10px", fontWeight: isBaseline ? 400 : 600, color, fontStyle: isBaseline ? "italic" : "normal" }}>{label}</td>
-                                <td style={{ padding: "8px 10px", textAlign: "right", color: n === 0 ? "#BFBFBA" : "#9B9A97", fontFamily: "'DM Mono', monospace" }}>{n === 0 ? "none yet" : n}</td>
-                                <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'DM Mono', monospace", color: n === 0 ? "#BFBFBA" : nFell === n && n > 0 ? "#27AE60" : parseFloat(data?.pct20) > 50 ? "#EB5757" : "#9B9A97" }}>
-                                  {n === 0 ? "—" : nFell != null ? `${nFell}/${n}` : "—"}
+                          {(() => {
+                            const bl = backtestResults.byLevel;
+                            const pm = backtestResults.plBubbleMetrics;
+                            const cp = backtestResults.correctionPercentiles;
+
+                            const buyRow = (label, key, color) => {
+                              const d = bl[key];
+                              if (!d || d.n === 0) return null;
+                              const nW = d.precision != null ? Math.round(d.precision / 100 * d.n) : null;
+                              const pc = d.precision > 70 ? "#27AE60" : d.precision > 50 ? "#F2994A" : "#EB5757";
+                              return (
+                                <tr key={key} style={{ borderBottom: "1px solid #F1F1EF" }}>
+                                  <td style={{ padding: "8px 10px", fontWeight: 600, color }}>{label}</td>
+                                  <td style={{ padding: "8px 10px", textAlign: "right", color: "#9B9A97", fontFamily: "'DM Mono', monospace" }}>{d.n}</td>
+                                  <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'DM Mono', monospace", color: pc }}>{nW != null ? `${nW}/${d.n}` : "—"}</td>
+                                  <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'DM Mono', monospace", color: d.avgReturn > 0 ? "#27AE60" : "#EB5757" }}>
+                                    {d.avgReturn != null ? `${d.avgReturn > 0 ? "+" : ""}${d.avgReturn}%` : "—"}
+                                  </td>
+                                  <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'DM Mono', monospace", color: d.minReturn >= 0 ? "#27AE60" : "#EB5757", fontSize: 11 }}>
+                                    {d.minReturn != null ? `${d.minReturn > 0 ? "+" : ""}${d.minReturn}%` : "—"}
+                                  </td>
+                                </tr>
+                              );
+                            };
+
+                            const sep = (
+                              <tr key="sep">
+                                <td colSpan={2} style={{ padding: "2px 10px", background: "#FFF8F5", fontSize: 9, color: "#BFBFBA", borderBottom: "1px solid #E8E5E0", borderTop: "1px solid #E8E5E0" }}>
+                                  Sell signals — 6m
                                 </td>
-                                <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'DM Mono', monospace", color: n === 0 ? "#BFBFBA" : data?.avgRet6m < 0 ? "#27AE60" : data?.avgRet6m > 20 ? "#EB5757" : "#9B9A97" }}>
-                                  {n === 0 ? "—" : data?.avgRet6m != null ? `${data.avgRet6m > 0 ? "+" : ""}${data.avgRet6m}%` : "—"}
-                                </td>
-                                <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'DM Mono', monospace", color: n === 0 ? "#BFBFBA" : "#EB5757", fontSize: 11 }}>
-                                  {n === 0 ? "—" : data?.maxDrawdown != null ? `${data.maxDrawdown > 0 ? "+" : ""}${data.maxDrawdown}%` : "—"}
+                                <td colSpan={3} style={{ padding: "2px 10px", background: "#FFF8F5", fontSize: 9, color: "#BFBFBA", borderBottom: "1px solid #E8E5E0", borderTop: "1px solid #E8E5E0", textAlign: "right" }}>
+                                  Worked = any loss / P25 ({cp?.p25 ?? -20}%) / P50 ({cp?.p50 ?? -10}%)
                                 </td>
                               </tr>
                             );
-                          })}
+
+                            const sellRow = (label, data, color, tag) => {
+                              const n = data?.n ?? 0;
+                              const nAny = data?.pctAnyLoss != null ? Math.round(parseFloat(data.pctAnyLoss)/100*n) : null;
+                              const nSig = data?.pct20      != null ? Math.round(parseFloat(data.pct20)/100*n)      : null;
+                              const nSev = data?.pctSevere  != null ? Math.round(parseFloat(data.pctSevere)/100*n)  : null;
+                              const worked = n === 0 ? "none yet" : `${nAny??'?'}/${nSig??'?'}/${nSev??'?'}`;
+                              return (
+                                <tr key={label} style={{ borderBottom: "1px solid #F1F1EF", background: "#FFFAF8" }}>
+                                  <td style={{ padding: "8px 10px", fontWeight: 600, color }}>
+                                    {label}{tag && <span style={{ fontSize: 9, color: "#BFBFBA", marginLeft: 6, fontWeight: 400 }}>{tag}</span>}
+                                  </td>
+                                  <td style={{ padding: "8px 10px", textAlign: "right", color: n===0?"#BFBFBA":"#9B9A97", fontFamily: "'DM Mono', monospace" }}>{n===0?"—":n}</td>
+                                  <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'DM Mono', monospace", color: n===0?"#BFBFBA":"#9B9A97", fontSize: 11 }}>{worked}</td>
+                                  <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'DM Mono', monospace", color: n===0?"#BFBFBA":data?.avgRet6m<0?"#27AE60":"#EB5757" }}>
+                                    {n===0?"—":data?.avgRet6m!=null?`${data.avgRet6m>0?"+":""}${data.avgRet6m}%`:"—"}
+                                  </td>
+                                  <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'DM Mono', monospace", color: n===0?"#BFBFBA":"#EB5757", fontSize: 11 }}>
+                                    {n===0?"—":data?.maxDrawdown!=null?`${data.maxDrawdown>0?"+":""}${data.maxDrawdown}%`:"—"}
+                                  </td>
+                                </tr>
+                              );
+                            };
+
+                            return (<>
+                              {buyRow("Strong Buy", "strongBuy", "#1B8A4A")}
+                              {buyRow("Buy",         "buy",       "#27AE60")}
+                              {buyRow("Hold",        "no",        "#9B9A97")}
+                              {sep}
+                              {sellRow("Reduce", pm?.reduce, "#F2994A", `σ > ${backtestResults.calibratedReduceSig} · 6m`)}
+                              {sellRow("Sell",   pm?.sell,   "#EB5757", `σ > ${backtestResults.calibratedBubbleSig} · 6m`)}
+                            </>);
+                          })()}
                         </tbody>
                       </table>
                     </div>
                     <div style={{ fontSize: 11, color: "#BFBFBA", marginTop: 5, lineHeight: 1.6 }}>
-                      "Fell &gt;20%" shows <strong style={{ color: "#9B9A97" }}>n/total</strong> — how many of those events led to a correction. If Reduce shows 1/1, the signal fired once and it was right 100% of the time. If it shows 2/2, both times it fired there was a correction. The backtest samples every 30 days — nearby points may represent the same market episode.
+                      Sell "Worked" = any loss / significant (P25={backtestResults.correctionPercentiles?.p25 ?? -20}%) / severe (P50={backtestResults.correctionPercentiles?.p50 ?? -10}%). These thresholds update automatically with each new market cycle.
+                      {backtestResults.byLevel.strongBuy?.n < 5 && <span style={{ color: "#F2994A" }}> Strong Buy: few examples.</span>}
                     </div>
                   </div>
                 )}
+
+                {/* Sell signals section was merged above */}
 
                 {/* Cross-validation por ciclos */}
                 {backtestResults.crossValidation?.length > 0 && (
@@ -4186,10 +4330,90 @@ export default function MMARDashboard() {
                   </div>
                 )}
 
+                {/* Calibración probabilística */}
+                {backtestResults.calibrationBuckets?.some(b => b.n > 0) && (
+                  <div style={{ marginBottom: 12 }}>
+                    <div style={{ fontSize: 10, color: "#BFBFBA", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600, marginBottom: 6 }}>
+                      Probabilistic calibration — does the model know when it's wrong?
+                    </div>
+                    <div style={{ fontSize: 12, color: "#9B9A97", marginBottom: 8, lineHeight: 1.5 }}>
+                      When the model says "high risk," does it actually lose more often? MC predicted loss vs actual loss rate by price zone.
+                    </div>
+                    <div style={{ border: "1px solid #E8E5E0", borderRadius: 6, overflow: "hidden" }}>
+                      <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
+                        <thead>
+                          <tr style={{ background: "#F7F6F3" }}>
+                            {["Price zone", "n", "MC predicted loss", "Actual loss rate", "Avg 12m return"].map(h => (
+                              <th key={h} style={{ padding: "7px 10px", textAlign: h === "Price zone" ? "left" : "right", color: "#9B9A97", fontWeight: 500, fontSize: 11, borderBottom: "1px solid #E8E5E0" }}>{h}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {backtestResults.calibrationBuckets.map(b => {
+                            if (b.n === 0) return null;
+                            const gap = b.pLossAvg != null && b.lossRate != null
+                              ? +(b.lossRate - b.pLossAvg).toFixed(1) : null;
+                            const gapColor = gap == null ? "#BFBFBA"
+                              : Math.abs(gap) < 5  ? "#27AE60"
+                              : Math.abs(gap) < 15 ? "#F2994A" : "#EB5757";
+                            return (
+                              <tr key={b.label} style={{ borderBottom: "1px solid #F1F1EF" }}>
+                                <td style={{ padding: "8px 10px", color: "#37352F", fontWeight: 500 }}>{b.label}</td>
+                                <td style={{ padding: "8px 10px", textAlign: "right", color: "#9B9A97", fontFamily: "'DM Mono', monospace" }}>{b.n}</td>
+                                <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'DM Mono', monospace", color: "#9B9A97" }}>
+                                  {b.pLossAvg != null ? `${b.pLossAvg}%` : "—"}
+                                </td>
+                                <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'DM Mono', monospace" }}>
+                                  <span style={{ color: b.lossRate > 30 ? "#EB5757" : b.lossRate > 15 ? "#F2994A" : "#27AE60" }}>
+                                    {b.lossRate != null ? `${b.lossRate}%` : "—"}
+                                  </span>
+                                  {gap != null && (
+                                    <span style={{ fontSize: 10, color: gapColor, marginLeft: 5 }}>
+                                      {gap > 0 ? "+" : ""}{gap}pp
+                                    </span>
+                                  )}
+                                </td>
+                                <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'DM Mono', monospace", color: b.avgReturn > 0 ? "#27AE60" : "#EB5757" }}>
+                                  {b.avgReturn != null ? `${b.avgReturn > 0 ? "+" : ""}${b.avgReturn}%` : "—"}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                    {(() => {
+                      const valid = backtestResults.calibrationBuckets.filter(b => b.n >= 3 && b.lossRate != null && b.pLossAvg != null);
+                      const maxGap = valid.length > 0 ? Math.max(...valid.map(b => Math.abs(b.lossRate - b.pLossAvg))) : null;
+                      const isMonotone = valid.length >= 3 &&
+                        valid.slice(1).every((b, i) => b.lossRate >= valid[i].lossRate - 3);
+                      return (
+                        <div style={{ fontSize: 11, marginTop: 6, lineHeight: 1.6, color: "#9B9A97" }}>
+                          {isMonotone && <span style={{ color: "#27AE60" }}>✓ Loss rate increases with σ — the model correctly orders risk. </span>}
+                          {maxGap != null && (
+                            <span style={{ color: maxGap < 10 ? "#27AE60" : maxGap < 20 ? "#F2994A" : "#EB5757" }}>
+                              {maxGap < 10
+                                ? `Max gap between predicted and actual: ${maxGap}pp — well calibrated.`
+                                : maxGap < 20
+                                ? `Max gap: ${maxGap}pp — moderate miscalibration. MC probabilities should be read directionally, not as precise numbers.`
+                                : `Max gap: ${maxGap}pp — the MC underestimates risk in overheated zones. The loss probabilities shown in the dashboard are likely too optimistic when σ > 0.5.`}
+                            </span>
+                          )}
+                          {backtestResults.unconditionalMean != null && (
+                            <span style={{ color: "#BFBFBA", marginLeft: 4 }}>
+                              Unconditional avg return: {backtestResults.unconditionalMean > 0 ? "+" : ""}{backtestResults.unconditionalMean}% — Bitcoin's long-run tailwind.
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })()}
+                  </div>
+                )}
+
                 {/* Nota metodológica */}
                 <div style={{ fontSize: 11, color: "#9B9A97", lineHeight: 1.7, padding: "10px 12px", background: "#F7F6F3", borderRadius: 6 }}>
                   Tested on every 30-day point from 2016 to today. At each point, the model computed its signal using only data available at that time — no hindsight. "Right" means the price was higher 12 months later.
-                  {backtestResults.baseRate != null && <span> Bitcoin went up in {backtestResults.baseRate}% of all 12-month periods — judge the buy accuracy against that number.</span>}
+                  {backtestResults.baseRate != null && <span> Bitcoin went up in {backtestResults.baseRate}% of all 12-month periods. The unconditional average return is {backtestResults.unconditionalMean > 0 ? "+" : ""}{backtestResults.unconditionalMean}% — use that as context for the numbers above.</span>}
                 </div>
 
               </Toggle>
@@ -5324,7 +5548,7 @@ export default function MMARDashboard() {
               <p style={{ margin: "0 0 12px" }}><strong style={{ color: "#37352F" }}>Step 2 — Fractal calibration.</strong> Using the last ~4 years of data (a rolling window), we measure trend persistence (Hurst exponent) and volatility clustering (intermittency). These adapt automatically as new data arrives.</p>
               <p style={{ margin: "0 0 12px" }}><strong style={{ color: "#37352F" }}>Step 3 — Regime detection.</strong> The market is classified into calm and volatile regimes using rolling volatility and a Markov transition matrix. Each regime has its own volatility scale — calm markets have tighter fluctuations, volatile markets allow wider swings. The regime acts as a context signal and adjusts the decision thresholds, but does not force mean-reversion in the simulation.</p>
               <p style={{ margin: "0 0 12px" }}><strong style={{ color: "#37352F" }}>Step 4 — Monte Carlo simulation.</strong> 2,000 paths are generated over 3 years using fractal volatility clustering (MMAR), shocks drawn from Bitcoin's actual historical returns, and Hurst-correlated momentum. The same paths are read at 1-year and 3-year horizons — no duplicate computation. A reflecting barrier at the RANSAC support floor is calibrated to the empirical frequency of historical breaches.</p>
-              <p style={{ margin: "0 0 0" }}><strong style={{ color: "#37352F" }}>Step 5 — Probabilistic verdict.</strong> Four conditions are evaluated using conjunctive logic — all must be true for YES. Two come from the Power Law (discount depth) and two from the Monte Carlo (loss probability, probability of reaching fair value). Thresholds are calibrated by walk-forward backtest via grid search, not chosen manually. Volatile regimes tighten all thresholds. Everything refits on every page load.</p>
+              <p style={{ margin: "0 0 0" }}><strong style={{ color: "#37352F" }}>Step 5 — Probabilistic verdict.</strong> Four factors are scored and combined — discount depth (Power Law), loss probability, probability of reaching fair value, and floor proximity (Monte Carlo). Factor weights are calibrated by walk-forward backtest via grid search. The sell signal runs independently via σ thresholds and Hurst momentum divergences. Volatile regimes reduce the buy score by 25%. Everything refits on every page load.</p>
             </div>
           </Toggle>
           <Divider />
@@ -5340,10 +5564,10 @@ export default function MMARDashboard() {
 
           <Toggle label="How does the buy/sell signal work?" open={openSections.faq_signal} onToggle={() => toggleSection("faq_signal")}>
             <div style={{ fontSize: 14, color: "#4F4F4F", lineHeight: 1.8 }}>
-              <p style={{ margin: "0 0 12px" }}>The signal uses two separate mechanisms — one for buying, one for selling — combined into a single spectrum: <strong>Strong Buy → Buy → Hold → Wait → Reduce → Sell.</strong></p>
-              <p style={{ margin: "0 0 12px" }}><strong>Buy side (conjunctive logic):</strong> YES requires all four conditions simultaneously — discount in σ (Power Law), low P(loss in 12m), high P(reaches fair value in 12m), and contained floor breach risk (all Monte Carlo). Thresholds are calibrated by walk-forward backtest, not chosen by hand. Strong Buy requires the same conditions met with significant margin.</p>
-              <p style={{ margin: "0 0 12px" }}><strong>Sell side (Hurst divergences):</strong> Only active when price is overheated (σ &gt; 0.5). Three divergences are monitored: D1 — σ rising but H90 falling (price extended, momentum weakening); D2 — H30 breaking below H90 (short-term momentum failing first); D3 — H90 falling while volatility expands (regime breakdown). Reduce activates with 2 divergences, Sell with all 3. Thresholds are calibrated by grid search against historical corrections.</p>
-              <p style={{ margin: "0 0 0" }}>Hold and Wait signal neither a clear entry nor exit. Hold = fair price with no strong signal. Wait = discount present but buy conditions not fully met. These are distinct from Reduce, which specifically signals momentum exhaustion at elevated prices.</p>
+              <p style={{ margin: "0 0 12px" }}>The signal uses two separate mechanisms — one for buying, one for selling — combined into a single spectrum: <strong>Strong Buy → Buy → Hold → Reduce → Sell.</strong></p>
+              <p style={{ margin: "0 0 12px" }}><strong>Buy side (continuous score):</strong> The model scores four factors simultaneously — discount in σ (Power Law), low P(loss in 12m), high P(reaches fair value in 12m), and contained floor breach risk. Factor weights are calibrated by walk-forward backtest, not chosen by hand. Strong Buy requires the score to exceed a higher threshold (top 40% of historical buy signals).</p>
+              <p style={{ margin: "0 0 12px" }}><strong>Sell side (two independent paths):</strong> Path 1 (Power Law) — σ above calibrated thresholds fires Reduce or Sell based on historical correction data. Path 2 (Hurst divergences) — momentum exhaustion signals in overheated territory. Either path alone is sufficient to trigger the signal.</p>
+              <p style={{ margin: "0 0 0" }}>Hold means no clear signal in either direction. It can mean fair value zone with no conviction, or a partial discount where buy conditions aren't fully met. If price is above fair value in Hold, the risk/return is already deteriorating — not a good entry, but not a clear exit either.</p>
             </div>
           </Toggle>
           <Divider />
