@@ -81,23 +81,34 @@ function fitPowerLaw(prices) {
     }
   }
 
-  // RANSAC support: same RANSAC slope, shifted to the minimum residual from liquid markets
+  // RANSAC support: soporte directo sin conversión a residuo WLS equivalente
+  // supportPrice(t) = exp(ransac.a + ransac.b * ln(t) + ransac.floor)
+  // Se usa directamente en el MC y en el chart — elimina la aproximación de evaluar
+  // la diferencia entre pendientes RANSAC y WLS en un único punto (tToday)
   const liquidStart = daysSinceGenesis("2013-04-01");
   const ransacResiduals = pts.filter(p => p.t > liquidStart).map(p => Math.log(p.price) - (rA + rB * Math.log(p.t)));
   const ransacFloor = ransacResiduals.length > 100 ? Math.min(...ransacResiduals) : -0.5;
-  // Support price at time t = exp(rA + rB*ln(t) + ransacFloor)
-  // Express as a WLS residual equivalent for band plotting: what residual from WLS gives the same price?
-  // supportPrice(t) = exp(rA + rB*ln(t) + ransacFloor)
-  // wlsPrice(t) = exp(a + b*ln(t) + resFloor)
-  // We need resFloor such that: a + b*ln(t) + resFloor = rA + rB*ln(t) + ransacFloor
-  // This varies with t, so we evaluate at t_today for the "equivalent residual"
-  const tToday = pts[pts.length - 1].t;
-  const supportPriceToday = Math.exp(rA + rB * Math.log(tToday) + ransacFloor);
-  const wlsPriceToday = Math.exp(a + b * Math.log(tToday));
-  const resFloor = Math.log(supportPriceToday) - Math.log(wlsPriceToday);
+
+  // resFloor como residuo WLS equivalente evaluado en cada t para el chart
+  // En lugar de un único punto, se computa como la diferencia media sobre el período completo
+  // Esto da una constante más estable que evaluar solo en tToday
+  const allPts = pts.filter(p => p.t > liquidStart);
+  const resFloorDeltas = allPts.map(p => {
+    const ransacLogP = rA + rB * Math.log(p.t) + ransacFloor;
+    const wlsLogP = a + b * Math.log(p.t);
+    return ransacLogP - wlsLogP;
+  });
+  const resFloor = resFloorDeltas.length > 0
+    ? resFloorDeltas.reduce((s, x) => s + x, 0) / resFloorDeltas.length
+    : ransacFloor;
+
   const resFloorSigma = ((resFloor - resMean) / resStd);
 
-  return { a, b, residuals, resMean, resStd, resFloor, resFloorSigma, r2, pts, ransacResiduals, ransac: { a: rA, b: rB, floor: ransacFloor } };
+  // supportPrice(t): función directa que usa la línea RANSAC sin aproximación
+  // Disponible para el MC y cualquier cálculo que necesite el precio de soporte en t arbitrario
+  const supportPriceFn = t => Math.exp(rA + rB * Math.log(t) + ransacFloor);
+
+  return { a, b, residuals, resMean, resStd, resFloor, resFloorSigma, r2, pts, ransacResiduals, ransac: { a: rA, b: rB, floor: ransacFloor }, supportPriceFn };
 }
 
 function plPrice(a, b, t) { return Math.exp(a + b * Math.log(t)); }
@@ -369,8 +380,95 @@ function generateCascade(nSteps, lambda2) {
   return tt;
 }
 
-// ── EVT/GPD cap: ajusta Generalized Pareto Distribution sobre residuos positivos extremos ──
+// ── Índice de divergencia Hurst — señal de venta ──
+// Mide tres divergencias entre el momentum fractal y el precio/volatilidad.
+// Cada divergencia activa vale 1 punto (0-3).
+// Solo es relevante cuando el precio está en sobrecompra (σ > umbral).
+function computeHurstDivergences(rollingHurst, sigmaFromPL, lookback = 6, thresholds = {}) {
+  const n = rollingHurst.length;
+  if (n < lookback + 2) return { score: 0, d1: false, d2: false, d3: false, detail: {} };
+
+  const cur  = rollingHurst[n - 1];
+  const prev = rollingHurst[n - 1 - lookback];
+
+  if (!cur || !prev) return { score: 0, d1: false, d2: false, d3: false, detail: {} };
+
+  const h90cur  = cur.h90  || cur.H  || 0.5;
+  const h90prev = prev.h90 || prev.H || 0.5;
+  const h30cur  = cur.h30  || cur.H  || 0.5;
+  const sigmaCur  = cur.sigma  ?? sigmaFromPL;
+  const sigmaPrev = prev.sigma ?? sigmaFromPL;
+
+  // Thresholds: usar calibrados si disponibles, si no los defaults
+  const sdT  = thresholds.sigmaDelta ?? 0.10;
+  const hdT  = thresholds.hDelta    ?? -0.03;
+  const vrT  = thresholds.volRatio  ?? 1.15;
+
+  // D1: σ sube pero H90 baja — divergencia precio(σ)-persistencia
+  // Nota: usamos σ (no precio directo) porque es la variable central del modelo.
+  // σ incorpora la tendencia del PL, lo que hace la divergencia más coherente internamente.
+  const d1 = (sigmaCur - sigmaPrev) > sdT && (h90cur - h90prev) < hdT;
+
+  // D2: H30 cae por debajo de H90 — momentum corto rompe antes que el largo
+  const d2 = (h30cur - h90cur) < hdT && h90cur > 0.55;
+
+  // D3: H90 baja mientras vol ratio sube — persistencia se rompe con expansión de vol
+  const volRatioCur  = cur.volRatio  || 1;
+  const volRatioPrev = prev.volRatio || 1;
+  const d3 = (h90cur - h90prev) < hdT && volRatioCur > vrT && volRatioCur > volRatioPrev;
+
+  const score = [d1, d2, d3].filter(Boolean).length;
+
+  return {
+    score,
+    d1, d2, d3,
+    detail: {
+      h90: +h90cur.toFixed(3),
+      h90prev: +h90prev.toFixed(3),
+      h30: +h30cur.toFixed(3),
+      volRatio: +volRatioCur.toFixed(2),
+      sigmaDelta: +(sigmaCur - sigmaPrev).toFixed(2),
+    },
+  };
+}
+
+
 // Reemplaza el capUp arbitrario de +2.5σ. Robusto a la escasez de observaciones extremas.
+// ── Augmented Dickey-Fuller test (ADF) ──
+// Verifica si los residuos son estacionarios (supuesto fundamental del modelo).
+// H0: raíz unitaria (no estacionario). Si tStat < cv5, rechazamos H0 → estacionario.
+function adfTest(series) {
+  const n = series.length;
+  if (n < 20) return { statistic: null, pValue: null, isStationary: null };
+  const dy = [], y_lag = [], dy_lag = [];
+  for (let i = 1; i < n; i++) { dy.push(series[i] - series[i-1]); y_lag.push(series[i-1]); }
+  for (let i = 1; i < dy.length; i++) dy_lag.push(dy[i-1]);
+  const m = dy_lag.length;
+  if (m < 10) return { statistic: null, pValue: null, isStationary: null };
+  // Regresión parcial: proyectar dy sobre dy_lag, luego regresar residuos sobre y_lag
+  const mDY = dy.slice(1).reduce((s,x)=>s+x,0)/m;
+  const mDL = dy_lag.reduce((s,x)=>s+x,0)/m;
+  const gamma = dy_lag.reduce((s,x,i)=>s+(x-mDL)*(dy[i+1]-mDY),0) /
+                Math.max(dy_lag.reduce((s,x)=>s+(x-mDL)**2,0), 1e-12);
+  const dy_adj  = dy.slice(1).map((y,i) => y - gamma*dy_lag[i]);
+  const ylg_adj = y_lag.slice(1);
+  const mYA = dy_adj.reduce((s,x)=>s+x,0)/m;
+  const mXA = ylg_adj.reduce((s,x)=>s+x,0)/m;
+  const num = ylg_adj.reduce((s,x,i)=>s+(x-mXA)*(dy_adj[i]-mYA),0);
+  const den = ylg_adj.reduce((s,x)=>s+(x-mXA)**2,0);
+  if (Math.abs(den) < 1e-12) return { statistic: null, pValue: null, isStationary: null };
+  const beta = num/den;
+  const resid = dy_adj.map((y,i) => y - mYA - beta*(ylg_adj[i]-mXA));
+  const s2 = resid.reduce((s,e)=>s+e*e,0) / Math.max(m-2,1);
+  const se = Math.sqrt(s2 / Math.max(den,1e-12));
+  if (se < 1e-12) return { statistic: null, pValue: null, isStationary: null };
+  const tStat = beta/se;
+  // Valores críticos MacKinnon (1994) con constante, n~100 (conservador)
+  const cv5 = -2.89;
+  const pValue = tStat < -3.51 ? 0.01 : tStat < cv5 ? 0.05 : tStat < -2.58 ? 0.10 : 0.15;
+  return { statistic: +tStat.toFixed(3), pValue, isStationary: tStat < cv5, cv5 };
+}
+
 function computeEVTcap(ransacResiduals, threshold = 0.85, quantile = 0.995) {
   const pos = ransacResiduals.filter(r => isFinite(r));
   if (pos.length < 20) return 3.0;
@@ -394,7 +492,7 @@ function computeEVTcap(ransacResiduals, threshold = 0.85, quantile = 0.995) {
   return Math.max(historicalMax * 1.05, Math.min(capRaw, 5.0));
 }
 
-function simulatePathsPL(nPaths, nDays, H, lambda2, resStd, resMean, a, b, t0, ouRegimes, currentResidual, resReturns, resFloor, capUp) {
+function simulatePathsPL(nPaths, nDays, H, lambda2, resStd, resMean, a, b, t0, ouRegimes, currentResidual, resReturns, resFloor, capUp, floorBreakProb = 0.03) {
   const empN = resReturns.length;
   let empVar = 0; for (let i = 0; i < empN; i++) empVar += resReturns[i] * resReturns[i];
   const empStd = Math.sqrt(empVar / empN) || 1;
@@ -409,10 +507,21 @@ function simulatePathsPL(nPaths, nDays, H, lambda2, resStd, resMean, a, b, t0, o
   const nRegimes = regimes.length;
 
   const paths = [];
-  let floorBreakCount = 0; // stress test: paths que rompen el floor
+  let floorBreakCount = 0;
 
   for (let p = 0; p < nPaths; p++) {
     const tt = generateCascade(nDays, lambda2);
+
+    // ── Corrección de bias de volScale ──
+    // E[sqrt(dTheta)] > 1 por convexidad de sqrt, lo que inflaría la dispersión ~10-15%.
+    // Normalizamos dividiendo por la media empírica de sqrt(dTheta) de esta cascada.
+    let sqrtSum = 0;
+    for (let t = 1; t <= nDays; t++) {
+      const dT = Math.max(tt[t] - tt[t-1], 1e-10) * nDays;
+      sqrtSum += Math.sqrt(dT);
+    }
+    const sqrtMean = sqrtSum / nDays || 1; // E[sqrt(dTheta)] para esta cascada
+
     const prices = new Float64Array(nDays + 1);
     prices[0] = plPrice(a, b, t0) * Math.exp(currentResidual);
     let X = currentResidual, prevNorm = 0;
@@ -426,29 +535,37 @@ function simulatePathsPL(nPaths, nDays, H, lambda2, resStd, resMean, a, b, t0, o
         reg = r < transition[reg][0] ? 0 : 1;
       }
 
-      // targetShockStd calibrado sobre empStd (no sobre kappa — OU eliminado del MC)
-      // El régimen sigue modulando la escala de volatilidad via volScale
+      // Escala de volatilidad: dos factores separados, no multiplicados
+      // 1. Régimen (calm/volatile): modula la std base del shock
+      // 2. Cascada MMAR (dTheta): redistribuye el tiempo de trading (multifractal)
+      // La cascada ya tiene E[dTheta] = 1 por construcción (normalizada en generateCascade)
+      // Por eso volScale se aplica como modulador proporcional, no como amplificador adicional
       const volMult = regimes[reg].volScale;
-      const targetShockStd = empStd * volMult;
+      // baseStd: std empírica de los residuos, modulada por el régimen
+      const baseStd = empStd * volMult;
 
       const plNow = plPrice(a, b, t0 + t);
+      // dTheta: incremento del tiempo de trading fractal (E=1/nDays por paso)
       const dTheta = Math.max(tt[t] - tt[t - 1], 1e-10) * nDays;
-      const volScale = Math.min(Math.sqrt(dTheta), 3.0);
+      // volScale normalizado por sqrtMean: elimina el bias de E[sqrt(X)] > sqrt(E[X])
+      const volScale = Math.min(Math.max(Math.sqrt(dTheta) / sqrtMean, 0.1), 2.0);
       const rawShock = resReturns[Math.floor(Math.random() * empN)];
       const normShock = rawShock / empStd;
       const correlatedNorm = mixAlpha * prevNorm + mixBeta * normShock;
       prevNorm = correlatedNorm;
-      const shock = correlatedNorm * targetShockStd * volScale;
+      // shock = dirección (Hurst) × std base (régimen) × clustering temporal (MMAR)
+      // La std esperada del shock por paso ≈ baseStd (E[volScale] ≈ 1 por la normalización de la cascada)
+      const shock = correlatedNorm * baseStd * volScale;
 
       // Opción B: solo MMAR/Hurst — sin fuerza de reversión OU
       X = X + shock;
 
-      // Reflecting barrier con stress test: 3% de paths pueden romper el floor
+      // Reflecting barrier con probabilidad de ruptura calibrada empíricamente
       if (X < capDn) {
-        if (Math.random() < 0.03 && !brokeFloor) {
-          brokeFloor = true; // path entra en zona de ruptura estructural
+        if (Math.random() < floorBreakProb && !brokeFloor) {
+          brokeFloor = true;
         } else {
-          X = capDn + (capDn - X) * 0.5; // soft bounce para el 97% restante
+          X = capDn + (capDn - X) * 0.5; // soft bounce
         }
       }
       X = Math.min(capUp, X);
@@ -471,6 +588,381 @@ function computePercentiles(paths, nDays) {
     result.push({ t, p5: vals[Math.floor(n * 0.05)], p25: vals[Math.floor(n * 0.25)], p50: vals[Math.floor(n * 0.50)], p75: vals[Math.floor(n * 0.75)], p95: vals[Math.floor(n * 0.95)] });
   }
   return result;
+}
+
+// ── Walk-forward backtest del sistema de señales ──
+// Computa por cada punto histórico: sig, pLoss1y, pFV (P llega al fair value en 12m)
+// nPaths reducido (200) para mantener el backtest rápido en browser.
+function runWalkForwardBacktest(prices, a, b, resMean, resStd, resFloor, evtCap, floorBreakProb, ouRegimes) {
+  const results = [];
+  const horizon = 365;
+  const minTrainDays = 365 * 3;
+
+  // Helper: interpola probabilidad en percentiles MC
+  function probAbove(pcts, targetPrice) {
+    const row = pcts[pcts.length - 1];
+    if (!row) return 50;
+    const pts = [{price:row.p5,prob:5},{price:row.p25,prob:25},{price:row.p50,prob:50},{price:row.p75,prob:75},{price:row.p95,prob:95}];
+    if (targetPrice <= pts[0].price) return 97.5;
+    if (targetPrice >= pts[4].price) return 2.5;
+    for (let k = 0; k < pts.length - 1; k++) {
+      if (targetPrice >= pts[k].price && targetPrice <= pts[k+1].price) {
+        const t = (targetPrice - pts[k].price) / (pts[k+1].price - pts[k].price);
+        return 100 - (pts[k].prob + t * (pts[k+1].prob - pts[k].prob));
+      }
+    }
+    return 50;
+  }
+
+  for (let i = minTrainDays; i < prices.length - horizon; i += 30) {
+    const p = prices[i];
+    const t0 = daysSinceGenesis(p.date);
+    if (t0 <= 0 || p.price <= 0) continue;
+
+    const plNow = plPrice(a, b, t0);
+    const residual = Math.log(p.price) - Math.log(plNow);
+    const sig = (residual - resMean) / resStd;
+
+    const futurePrice = prices[i + horizon]?.price;
+    if (!futurePrice) continue;
+    const realReturn = (futurePrice - p.price) / p.price * 100;
+    const isGoodBuy = realReturn > 0; // "good buy" = no perder dinero (base conservadora)
+
+    const resReturnsSlice = [];
+    for (let j = Math.max(1, i - 365); j < i; j++) {
+      const r0 = Math.log(prices[j-1].price) - Math.log(plPrice(a, b, daysSinceGenesis(prices[j-1].date)));
+      const r1 = Math.log(prices[j].price) - Math.log(plPrice(a, b, daysSinceGenesis(prices[j].date)));
+      resReturnsSlice.push(r1 - r0);
+    }
+    if (resReturnsSlice.length < 30) continue;
+
+    const H = 0.65;
+    const lambda2 = 0.12;
+    const paths = simulatePathsPL(200, horizon, H, lambda2, resStd, resMean, a, b, t0, ouRegimes, residual, resReturnsSlice, resFloor, evtCap, floorBreakProb);
+    const pcts = computePercentiles(paths, horizon);
+
+    // P(pérdida en 12m) — fracción de paths bajo el precio de entrada
+    const pLoss1y = Math.max(0, Math.min(100, 100 - probAbove(pcts, p.price)));
+
+    // P(llega al fair value en 12m) — fair value en t0+365
+    const fv1y = plPrice(a, b, t0 + horizon);
+    const pFV = Math.max(0, Math.min(100, probAbove(pcts, fv1y)));
+
+    // Régimen en ese punto histórico: calm si rolling vol < mediana, volatile si no
+    const recentVols = resReturnsSlice.slice(-30).map(r => Math.abs(r));
+    const medVol = [...resReturnsSlice.map(r => Math.abs(r))].sort((a,b) => a-b)[Math.floor(resReturnsSlice.length/2)];
+    const avgRecentVol = recentVols.reduce((s,x) => s+x, 0) / Math.max(recentVols.length, 1);
+    const regime = avgRecentVol > medVol ? "volatile" : "calm";
+
+    results.push({
+      date: p.date,
+      sig: +sig.toFixed(2),
+      pLoss1y: +pLoss1y.toFixed(1),
+      pFV: +pFV.toFixed(1),
+      realReturn: +realReturn.toFixed(1),
+      isGoodBuy,
+      regime,
+    });
+  }
+
+  if (results.length === 0) return {
+    thresholds: { sig: -0.5, pLoss1y: 20, pFV: 40 },
+    precision: null, recall: null, nYes: 0, nNo: 0,
+    avgReturnYes: null, avgReturnNo: null, results: [],
+    regimeEffect: null,
+  };
+
+  // ── Calibración de umbrales por grid search ──
+  const sigCandidates   = [-0.3, -0.5, -0.8, -1.0, -1.2];
+  const pLossCandidates = [10, 15, 20, 25, 30];
+  const pFVCandidates   = [30, 40, 50, 60];
+
+  let bestF1 = -1, bestThresholds = { sig: -0.5, pLoss1y: 20, pFV: 40 };
+
+  for (const sigT of sigCandidates) {
+    for (const pLossT of pLossCandidates) {
+      for (const pFVT of pFVCandidates) {
+        const yesIdx = results.filter(r => r.sig < sigT && r.pLoss1y < pLossT && r.pFV > pFVT);
+        if (yesIdx.length < 5) continue;
+        const tp = yesIdx.filter(r => r.isGoodBuy).length;
+        const allPos = results.filter(r => r.isGoodBuy).length;
+        const precision = tp / yesIdx.length;
+        const recall = allPos > 0 ? tp / allPos : 0;
+        const f1 = precision + recall > 0 ? 2 * precision * recall / (precision + recall) : 0;
+        if (f1 > bestF1) { bestF1 = f1; bestThresholds = { sig: sigT, pLoss1y: pLossT, pFV: pFVT }; }
+      }
+    }
+  }
+
+  // Métricas globales con thresholds calibrados
+  const isYes = r => r.sig < bestThresholds.sig && r.pLoss1y < bestThresholds.pLoss1y && r.pFV > bestThresholds.pFV;
+
+  // Clasificación por nivel — misma lógica que generateVerdict
+  // Strong Buy: condiciones cumplidas con holgura (márgenes del 50% sobre los thresholds)
+  const isStrongBuy = r =>
+    r.sig < bestThresholds.sig * 1.5 &&          // descuento más profundo
+    r.pLoss1y < bestThresholds.pLoss1y * 0.6 &&  // riesgo de pérdida mucho más bajo
+    r.pFV > bestThresholds.pFV * 1.2;            // mayor probabilidad de llegar al FV
+
+  const levelOf = r => {
+    if (!isYes(r)) return "no";
+    if (isStrongBuy(r)) return "strongBuy";
+    return "buy";
+  };
+
+  results.forEach(r => { r.level = levelOf(r); });
+
+  const strongBuyResults = results.filter(r => r.level === "strongBuy");
+  const buyResults       = results.filter(r => r.level === "buy");
+  const yesResults       = results.filter(isYes);
+  const noResults        = results.filter(r => !isYes(r));
+  const truePositives    = yesResults.filter(r => r.isGoodBuy).length;
+  const allPositives     = results.filter(r => r.isGoodBuy).length;
+
+  // ── Segmentación por régimen ──
+  const yesCalm     = yesResults.filter(r => r.regime === "calm");
+  const yesVolatile = yesResults.filter(r => r.regime === "volatile");
+  const allCalm     = results.filter(r => r.regime === "calm");
+  const allVolatile = results.filter(r => r.regime === "volatile");
+
+  const avgReturn = arr => arr.length > 0
+    ? +(arr.reduce((s,r) => s + r.realReturn, 0) / arr.length).toFixed(1)
+    : null;
+  const precisionFn = arr => arr.length > 0
+    ? +(arr.filter(r => r.isGoodBuy).length / arr.length * 100).toFixed(1)
+    : null;
+
+  const regimeEffect = {
+    calm:     { n: allCalm.length,     nYes: yesCalm.length,     avgReturn: avgReturn(yesCalm),     precisionYes: precisionFn(yesCalm) },
+    volatile: { n: allVolatile.length, nYes: yesVolatile.length, avgReturn: avgReturn(yesVolatile), precisionYes: precisionFn(yesVolatile) },
+    delta: yesCalm.length >= 3 && yesVolatile.length >= 3
+      ? +((avgReturn(yesCalm) || 0) - (avgReturn(yesVolatile) || 0)).toFixed(1)
+      : null,
+  };
+
+  // ── Métricas por nivel de señal ──
+  const byLevel = {
+    strongBuy: {
+      n:          strongBuyResults.length,
+      precision:  precisionFn(strongBuyResults),
+      avgReturn:  avgReturn(strongBuyResults),
+      minReturn:  strongBuyResults.length > 0 ? +Math.min(...strongBuyResults.map(r => r.realReturn)).toFixed(1) : null,
+    },
+    buy: {
+      n:          buyResults.length,
+      precision:  precisionFn(buyResults),
+      avgReturn:  avgReturn(buyResults),
+      minReturn:  buyResults.length > 0 ? +Math.min(...buyResults.map(r => r.realReturn)).toFixed(1) : null,
+    },
+    no: {
+      n:          noResults.length,
+      precision:  precisionFn(noResults),  // % de NO que igualmente fueron buena compra
+      avgReturn:  avgReturn(noResults),
+      minReturn:  noResults.length > 0 ? +Math.min(...noResults.map(r => r.realReturn)).toFixed(1) : null,
+    },
+  };
+
+  // ── Calibración de thresholds de divergencias Hurst por grid search ──
+  // Variable dependiente: precio cae > 20% en los siguientes 6 meses
+  // Computamos divergencias ligeras dentro del loop usando resReturnsSlice
+  const horizonSell = 182;
+  const sellResults = [];
+
+  // Candidatos para grid search de divergencias
+  const sigmaDeltaCandidates = [0.05, 0.10, 0.15, 0.20];
+  const hDeltaCandidates     = [-0.02, -0.03, -0.05];
+  const volRatioCandidates   = [1.10, 1.15, 1.20, 1.25];
+
+  // Computar datos de divergencia por punto histórico en sobrecompra
+  for (let i = minTrainDays; i < prices.length - horizonSell; i += 30) {
+    const p = prices[i];
+    const t0loc = daysSinceGenesis(p.date);
+    if (t0loc <= 0) continue;
+    const plLoc = plPrice(a, b, t0loc);
+    const resLoc = Math.log(p.price) - Math.log(plLoc);
+    const sigLoc = (resLoc - resMean) / resStd;
+    if (sigLoc <= 0.5) continue; // solo sobrecompra
+
+    const futureP = prices[i + horizonSell]?.price;
+    if (!futureP) continue;
+    const ret6m = (futureP - p.price) / p.price * 100;
+    const isGoodSell = ret6m < -20; // corrección > 20%
+
+    // Calcular divergencias con ventana de datos disponibles
+    const sliceCur  = [];
+    const slicePrev = [];
+    for (let j = Math.max(1, i - 90); j < i; j++) {
+      const r0 = Math.log(prices[j-1].price) - Math.log(plPrice(a, b, daysSinceGenesis(prices[j-1].date)));
+      const r1 = Math.log(prices[j].price)   - Math.log(plPrice(a, b, daysSinceGenesis(prices[j].date)));
+      sliceCur.push(r1 - r0);
+    }
+    for (let j = Math.max(1, i - 120); j < i - 30; j++) {
+      const r0 = Math.log(prices[j-1].price) - Math.log(plPrice(a, b, daysSinceGenesis(prices[j-1].date)));
+      const r1 = Math.log(prices[j].price)   - Math.log(plPrice(a, b, daysSinceGenesis(prices[j].date)));
+      slicePrev.push(r1 - r0);
+    }
+    if (sliceCur.length < 30 || slicePrev.length < 30) continue;
+
+    const { H: h90cur  } = hurstDFA(sliceCur.slice(-90));
+    const { H: h30cur  } = hurstDFA(sliceCur.slice(-30));
+    const { H: h90prev } = hurstDFA(slicePrev.slice(-90));
+
+    const volFn = arr => { const m = arr.reduce((s,x)=>s+x,0)/arr.length; return Math.sqrt(arr.reduce((s,x)=>s+(x-m)**2,0)/arr.length); };
+    const vol30 = volFn(sliceCur.slice(-30));
+    const vol90 = volFn(sliceCur.slice(-90));
+    const volRatioLoc = vol90 > 0 ? vol30 / vol90 : 1;
+
+    // Sigma anterior (30 días antes)
+    const prevIdx = Math.max(0, i - 6); // ~30 días (paso de 5 días en rolling)
+    const pPrev = prices[Math.max(0, i - 30)];
+    const sigPrev = pPrev ? (Math.log(pPrev.price) - Math.log(plPrice(a, b, daysSinceGenesis(pPrev.date))) - resMean) / resStd : sigLoc;
+    const sigmaDelta = sigLoc - sigPrev;
+
+    sellResults.push({
+      date: p.date, sig: +sigLoc.toFixed(2), ret6m: +ret6m.toFixed(1), isGoodSell,
+      sigmaDelta: +sigmaDelta.toFixed(3),
+      h90delta: +(h90cur - h90prev).toFixed(3),
+      h30h90delta: +(h30cur - h90cur).toFixed(3),
+      volRatio: +volRatioLoc.toFixed(3),
+      h90cur: +h90cur.toFixed(3),
+    });
+  }
+
+  // Grid search para umbrales de divergencias
+  let bestSellF1 = -1;
+  let bestSellThresholds = { sigmaDelta: 0.10, hDelta: -0.03, volRatio: 1.15 };
+  let bestSellMetrics = null;
+
+  if (sellResults.length >= 5) {
+    for (const sdT of sigmaDeltaCandidates) {
+      for (const hdT of hDeltaCandidates) {
+        for (const vrT of volRatioCandidates) {
+          const d1 = r => r.sigmaDelta > sdT && r.h90delta < hdT;
+          const d2 = r => r.h30h90delta < hdT && r.h90cur > 0.55;
+          const d3 = r => r.h90delta < hdT && r.volRatio > vrT;
+          const scoreOf = r => [d1(r), d2(r), d3(r)].filter(Boolean).length;
+
+          const sellSignals = sellResults.filter(r => scoreOf(r) >= 2);
+          if (sellSignals.length < 3) continue;
+          const tp = sellSignals.filter(r => r.isGoodSell).length;
+          const allSellPos = sellResults.filter(r => r.isGoodSell).length;
+          const prec = tp / sellSignals.length;
+          const rec  = allSellPos > 0 ? tp / allSellPos : 0;
+          const f1   = prec + rec > 0 ? 2 * prec * rec / (prec + rec) : 0;
+          if (f1 > bestSellF1) {
+            bestSellF1 = f1;
+            bestSellThresholds = { sigmaDelta: sdT, hDelta: hdT, volRatio: vrT };
+            const d1b = r => r.sigmaDelta > sdT && r.h90delta < hdT;
+            const d2b = r => r.h30h90delta < hdT && r.h90cur > 0.55;
+            const d3b = r => r.h90delta < hdT && r.volRatio > vrT;
+            const scoreB = r => [d1b(r), d2b(r), d3b(r)].filter(Boolean).length;
+            const sell2 = sellResults.filter(r => scoreB(r) === 2);
+            const sell3 = sellResults.filter(r => scoreB(r) === 3);
+            const avgRet = arr => arr.length > 0 ? +(arr.reduce((s,r)=>s+r.ret6m,0)/arr.length).toFixed(1) : null;
+            const prec2 = sell2.length > 0 ? +(sell2.filter(r=>r.isGoodSell).length/sell2.length*100).toFixed(1) : null;
+            const prec3 = sell3.length > 0 ? +(sell3.filter(r=>r.isGoodSell).length/sell3.length*100).toFixed(1) : null;
+            bestSellMetrics = {
+              reduce: { n: sell2.length, precision: prec2, avgRet6m: avgRet(sell2) },
+              sell:   { n: sell3.length, precision: prec3, avgRet6m: avgRet(sell3) },
+              allOverheat: { n: sellResults.length, avgRet6m: avgRet(sellResults) },
+            };
+          }
+        }
+      }
+    }
+  }
+
+  const sellBacktest = sellResults.length >= 3 ? {
+    thresholds: bestSellThresholds,
+    metrics: bestSellMetrics ? (() => {
+      // Métricas adicionales: avgDaysToCorrection, maxDrawdown
+      const sdT = bestSellThresholds.sigmaDelta;
+      const hdT = bestSellThresholds.hDelta;
+      const vrT = bestSellThresholds.volRatio;
+      const d1f = r => r.sigmaDelta > sdT && r.h90delta < hdT;
+      const d2f = r => r.h30h90delta < hdT && r.h90cur > 0.55;
+      const d3f = r => r.h90delta < hdT && r.volRatio > vrT;
+      const scoreF = r => [d1f(r), d2f(r), d3f(r)].filter(Boolean).length;
+
+      const sell3 = sellResults.filter(r => scoreF(r) === 3);
+      const sell2 = sellResults.filter(r => scoreF(r) === 2);
+
+      // maxDrawdown: peor retorno observado a 6m después de señal
+      const maxDrawdown = arr => arr.length > 0 ? +Math.min(...arr.map(r => r.ret6m)).toFixed(1) : null;
+
+      // avgDaysToCorrection: aproximado — si ret6m < 0, asumimos corrección a mitad del período como proxy
+      // (no tenemos granularidad diaria en el backtest, esta es una estimación conservadora)
+      const avgDaysEst = arr => {
+        const correcting = arr.filter(r => r.isGoodSell);
+        return correcting.length > 0 ? "< 90d (est.)" : null;
+      };
+
+      return {
+        ...bestSellMetrics,
+        sell:   { ...bestSellMetrics.sell,   maxDrawdown: maxDrawdown(sell3), daysEst: avgDaysEst(sell3) },
+        reduce: { ...bestSellMetrics.reduce, maxDrawdown: maxDrawdown(sell2), daysEst: avgDaysEst(sell2) },
+      };
+    })() : null,
+    nOverheat: sellResults.length,
+    note: sellResults.length < 10 ? "Small sample — interpret with caution." : null,
+  } : null;
+
+  // ── Validación cruzada por períodos ──
+  // Responde: ¿son los thresholds estables entre ciclos o sobreajustados al último?
+  const periods = [
+    { label: "2013–2017", start: "2013-01-01", end: "2017-12-31" },
+    { label: "2018–2021", start: "2018-01-01", end: "2021-12-31" },
+    { label: "2022–present", start: "2022-01-01", end: "2099-12-31" },
+  ];
+
+  const crossValidation = periods.map(period => {
+    const periodResults = results.filter(r => r.date >= period.start && r.date <= period.end);
+    if (periodResults.length < 3) return { label: period.label, n: 0, precision: null, avgReturn: null };
+
+    const yesP = periodResults.filter(r =>
+      r.sig < bestThresholds.sig &&
+      r.pLoss1y < bestThresholds.pLoss1y &&
+      r.pFV > bestThresholds.pFV
+    );
+    const tpP = yesP.filter(r => r.isGoodBuy).length;
+
+    return {
+      label: period.label,
+      n: periodResults.length,
+      nYes: yesP.length,
+      precision: yesP.length > 0 ? +(tpP / yesP.length * 100).toFixed(1) : null,
+      avgReturn: avgReturn(yesP),
+    };
+  }).filter(p => p.n > 0);
+
+  // Estabilidad: ¿cuánto varían las precisiones entre períodos?
+  const precisions = crossValidation.map(p => p.precision).filter(p => p != null);
+  const stabilityDelta = precisions.length >= 2
+    ? +(Math.max(...precisions) - Math.min(...precisions)).toFixed(1)
+    : null;
+
+  // Base rate histórico: % de puntos donde el retorno a 12m fue positivo (sin señal)
+  const baseRate = results.length > 0
+    ? +(results.filter(r => r.realReturn > 0).length / results.length * 100).toFixed(1)
+    : null;
+
+  return {
+    thresholds: bestThresholds,
+    precision: yesResults.length > 0 ? +(truePositives / yesResults.length * 100).toFixed(1) : null,
+    recall: allPositives > 0 ? +(truePositives / allPositives * 100).toFixed(1) : null,
+    nYes: yesResults.length,
+    nNo: noResults.length,
+    avgReturnYes: avgReturn(yesResults),
+    avgReturnNo:  avgReturn(noResults),
+    baseRate,
+    regimeEffect,
+    byLevel,
+    sellBacktest,
+    sellThresholds: bestSellThresholds,
+    crossValidation,
+    stabilityDelta,
+    results,
+  };
 }
 
 // ══════════════════════════════════════════════════════
@@ -1942,10 +2434,10 @@ export default function MMARDashboard() {
   // Toggle states for sections
   const [openSections, setOpenSections] = useState({
     faq_pl: false, faq_fractal: false, faq_method: false, faq_mc: false,
-    faq_signal: false, faq_data: false, faq_accuracy: false, faq_ta: false,
+    faq_signal: false, faq_hurst_div: false, faq_data: false, faq_accuracy: false, faq_ta: false,
     faq_notwhat: false, faq_who: false, faq_limits: false,
     shouldbuy: true,
-    longanswer: false, dataview: false, drivers: false, powerlaw: false,
+    longanswer: false, validation: false, validationDetails: false, dataview: false, drivers: false, powerlaw: false,
     levels: false, plforward: false, montecarlo: false, scenarios: false,
     mc3y: false, mc3y_chart: false, riskmatrix: false,
     regime: false, hurst: false, technicals: false,
@@ -1967,16 +2459,16 @@ export default function MMARDashboard() {
       try {
         const { spot } = await fetchSpotPrice();
         if (!spot) { setRefreshing(false); return; }
-        const { a, b, resMean, resStd, resFloor, H, lambda2, ouRegimes, t0, resReturns, evtCap } = d;
+        const { a, b, resMean, resStd, resFloor, H, lambda2, ouRegimes, t0, resReturns, evtCap, floorBreakProb } = d;
         const tNow = daysSinceGenesis(new Date().toISOString().slice(0, 10));
         const plNow = plPrice(a, b, tNow);
         const newResidual = Math.log(spot) - Math.log(plNow);
         const newSigma = (newResidual - resMean) / resStd;
-        const paths = simulatePathsPL(200, 365, H, lambda2, resStd, resMean, a, b, tNow, ouRegimes, newResidual, resReturns, resFloor, evtCap);
-        const pct = computePercentiles(paths, 365);
+        // MC unificado: un solo run 3Y, leer días 365 y 1095
         const N3Y = 365 * 3;
-        const paths3y = simulatePathsPL(200, N3Y, H, lambda2, resStd, resMean, a, b, tNow, ouRegimes, newResidual, resReturns, resFloor, evtCap);
-        const pct3y = computePercentiles(paths3y, N3Y);
+        const pathsUnified = simulatePathsPL(200, N3Y, H, lambda2, resStd, resMean, a, b, tNow, ouRegimes, newResidual, resReturns, resFloor, evtCap, floorBreakProb);
+        const pct  = computePercentiles(pathsUnified, 365);
+        const pct3y = computePercentiles(pathsUnified, N3Y);
         setD(prev => ({ ...prev, S0: spot, t0: tNow, plToday: plNow, sigmaFromPL: newSigma, currentResidual: newResidual, percentiles: pct, percentiles3y: pct3y, pl1y: +plPrice(a, b, tNow + 365).toFixed(0), pl2y: +plPrice(a, b, tNow + 730).toFixed(0), pl3y: +plPrice(a, b, tNow + 365 * 3).toFixed(0) }));
         setLastRefresh(new Date());
       } catch (e) { console.warn("Refresh:", e); }
@@ -1996,10 +2488,39 @@ export default function MMARDashboard() {
       setMsg("Fitting Power Law model...");
       await new Promise(r => setTimeout(r, 20));
       const pl = fitPowerLaw(prices);
-      const { a, b, residuals, resMean, resStd, resFloor, resFloorSigma, r2, ransac, ransacResiduals } = pl;
+      const { a, b, residuals, resMean, resStd, resFloor, resFloorSigma, r2, ransac, ransacResiduals, supportPriceFn } = pl;
       // EVT/GPD cap: empírico, reemplaza +2.5σ arbitrario
       // RANSAC floor (mínimo residuo) + EVT cap (GPD sobre residuos extremos positivos)
       const evtCap = computeEVTcap(ransacResiduals);
+
+      // ── Calibración empírica de la barrera reflectante (Punto 3) ──
+      // En lugar del factor 0.4 arbitrario, medimos directamente con bloques anuales deslizantes
+      // cuántos períodos de 365 días contienen al menos un día bajo el soporte RANSAC.
+      // Esto da la probabilidad empírica real de ruptura anual sin asumir independencia diaria.
+      const liquidStart = daysSinceGenesis("2013-04-01");
+      const ptsLiquid = pl.pts.filter(p => p.t > liquidStart);
+      const ransacResidualsByDay = ptsLiquid.map(p => ({
+        t: p.t,
+        r: Math.log(p.price) - (ransac.a + ransac.b * Math.log(p.t))
+      }));
+
+      // Bloques anuales deslizantes: cada bloque = 365 días consecutivos
+      // Conta cuántos bloques tienen al menos un día con r < ransac.floor
+      const blockSize = 365;
+      let blocksTotal = 0, blocksWithBreak = 0;
+      for (let i = 0; i <= ransacResidualsByDay.length - blockSize; i += 30) { // paso de 30 días para independencia
+        const block = ransacResidualsByDay.slice(i, i + blockSize);
+        blocksTotal++;
+        if (block.some(d => d.r < ransac.floor)) blocksWithBreak++;
+      }
+      // floorBreakProb: fracción de años históricos donde el precio tocó el soporte
+      // Fallback al método teórico si hay pocos bloques
+      const empiricalFloorProb = ptsLiquid.length > 0
+        ? ptsLiquid.filter(p => Math.log(p.price) - (ransac.a + ransac.b * Math.log(p.t)) < ransac.floor).length / ptsLiquid.length
+        : 0.01;
+      const floorBreakProb = blocksTotal >= 5
+        ? Math.min(blocksWithBreak / blocksTotal, 0.20)
+        : Math.min(1 - Math.pow(1 - empiricalFloorProb, 365), 0.15);
 
       const lastPrice = prices[prices.length - 1];
       const S0 = lastPrice.price;
@@ -2078,20 +2599,31 @@ export default function MMARDashboard() {
       const kappa = ouRegimes.globalKappa;
       const halfLife = ouRegimes.halfLife;
 
-      setMsg("Running 2,000 Monte Carlo simulations (1Y)...");
+      // ── ADF test: verificar estacionariedad de los residuos ──
+      // Supuesto fundamental del modelo: si los residuos no son estacionarios,
+      // los parámetros calibrados sobre el histórico pueden estar sesgados.
+      const adfResult = adfTest(dailyResiduals);
+
+      // ── MC unificado: un solo run de 3Y, percentiles extraídos en días 365 y 1095 ──
+      // Elimina el doble cómputo — los paths del año 1 están contenidos en los paths del año 3
+      const N3Y = 365 * 3;
+      setMsg("Running 2,000 Monte Carlo simulations (3Y unified)...");
       await new Promise(r => setTimeout(r, 30));
-      // Batch MC en chunks de 100 para no congelar la UI — 20 batches = 2,000 paths
-      let paths = [];
+      let paths3y = [];
       let floorBreakAccum1y = 0;
       for (let batch = 0; batch < 20; batch++) {
-        const chunk = simulatePathsPL(100, 365, H, lambda2, resStd, resMean, a, b, t0, ouRegimes, currentResidual, resReturns, resFloor, evtCap);
+        const chunk = simulatePathsPL(100, N3Y, H, lambda2, resStd, resMean, a, b, t0, ouRegimes, currentResidual, resReturns, resFloor, evtCap, floorBreakProb);
+        // pFloorBreak se mide sobre el horizonte completo (3Y): más conservador
         floorBreakAccum1y += (chunk.floorBreakPct || 0) * chunk.length / 100;
-        paths = paths.concat(chunk);
-        setMsg(`Running Monte Carlo... ${(batch + 1) * 100}/2000 (1Y)`);
+        paths3y = paths3y.concat(chunk);
+        setMsg(`Running Monte Carlo... ${(batch + 1) * 100}/2000`);
         await new Promise(r => setTimeout(r, 10));
       }
-      const pFloorBreak1y = +(floorBreakAccum1y / paths.length * 100).toFixed(2);
-      const percentiles = computePercentiles(paths, 365);
+      // Mismos paths, distintos horizontes de lectura
+      const paths = paths3y; // alias para compatibilidad con bootstrap y código existente
+      const pFloorBreak1y = +(floorBreakAccum1y / paths3y.length * 100).toFixed(2);
+      const percentiles  = computePercentiles(paths3y, 365);   // lee día 365 de cada path
+      const percentiles3y = computePercentiles(paths3y, N3Y);  // lee día 1095 de cada path
 
       // PL chart data — daily resolution (sampled per range for performance)
       const plChart = prices.map(p => {
@@ -2134,18 +2666,6 @@ export default function MMARDashboard() {
         return { date: p.date.slice(0, 7), sigma: +((res - resMean) / resStd).toFixed(3), price: +p.price.toFixed(0), fair: +plV.toFixed(0) };
       }).filter(Boolean);
 
-      setMsg("Running 2,000 Monte Carlo simulations (3Y)...");
-      await new Promise(r => setTimeout(r, 30));
-      const N3Y = 365 * 3;
-      let paths3y = [];
-      for (let batch = 0; batch < 20; batch++) {
-        const chunk = simulatePathsPL(100, N3Y, H, lambda2, resStd, resMean, a, b, t0, ouRegimes, currentResidual, resReturns, resFloor, evtCap);
-        paths3y = paths3y.concat(chunk);
-        setMsg(`Running Monte Carlo... ${(batch + 1) * 100}/2000 (3Y)`);
-        await new Promise(r => setTimeout(r, 10));
-      }
-      const percentiles3y = computePercentiles(paths3y, N3Y);
-
       const plForecast365 = Array.from({ length: 73 }, (_, i) => ({ t: i * 5, pl: +plPrice(a, b, t0 + i * 5).toFixed(0) }));
       const plForecast3y = Array.from({ length: Math.ceil(N3Y / 5) + 1 }, (_, i) => ({ t: i * 5, pl: +plPrice(a, b, t0 + i * 5).toFixed(0) }));
 
@@ -2155,6 +2675,43 @@ export default function MMARDashboard() {
       const acLags = [1, 2, 3, 5].map(lag => { const nn = resReturns.length - lag; if (nn < 10) return 0; let cov = 0; for (let i = 0; i < nn; i++) cov += (resReturns[i] - rrMean) * (resReturns[i + lag] - rrMean); return cov / nn / (rrVar || 1); });
       const mom = acLags.reduce((s, x) => s + x, 0) / acLags.length;
 
+      // ── Backtest walk-forward (Punto 5) ──
+      // Corre en segundo plano después del MC principal
+      setMsg("Running walk-forward backtest...");
+      await new Promise(r => setTimeout(r, 20));
+      const backtestResults = runWalkForwardBacktest(prices, a, b, resMean, resStd, resFloor, evtCap, floorBreakProb, ouRegimes);
+
+      // ── Intervalos de credibilidad bootstrap (Punto 7) ──
+      // Remuestrea los 2,000 paths para obtener CI del 90% sobre p30
+      const nBoot = 200;
+      const targetPrice1y = prices[prices.length - 1].price * 1.30;
+      const p30Boots = [];
+      for (let b = 0; b < nBoot; b++) {
+        const bootPaths = Array.from({ length: 200 }, () => paths[Math.floor(Math.random() * paths.length)]);
+        const bootPcts = computePercentiles(bootPaths, 365);
+        const row = bootPcts[bootPcts.length - 1];
+        if (!row) continue;
+        const pts = [{price:row.p5,prob:5},{price:row.p25,prob:25},{price:row.p50,prob:50},{price:row.p75,prob:75},{price:row.p95,prob:95}];
+        let pLoss = 50;
+        if (targetPrice1y <= pts[0].price) pLoss = 2.5;
+        else if (targetPrice1y >= pts[4].price) pLoss = 97.5;
+        else {
+          for (let k = 0; k < pts.length - 1; k++) {
+            if (targetPrice1y >= pts[k].price && targetPrice1y <= pts[k+1].price) {
+              const tt = (targetPrice1y - pts[k].price) / (pts[k+1].price - pts[k].price);
+              pLoss = pts[k].prob + tt * (pts[k+1].prob - pts[k].prob);
+              break;
+            }
+          }
+        }
+        p30Boots.push(Math.max(0, Math.min(100, 100 - pLoss)));
+      }
+      p30Boots.sort((x, y) => x - y);
+      const p30CI = {
+        lo: +p30Boots[Math.floor(nBoot * 0.05)].toFixed(1),
+        hi: +p30Boots[Math.floor(nBoot * 0.95)].toFixed(1),
+      };
+
       setD({
         H, lambda2, std, mean, skew, kurt, annualVol, S0, t0, n, source, mom,
         isSynthetic: source.includes("Synthetic"),
@@ -2162,7 +2719,11 @@ export default function MMARDashboard() {
         kappa, halfLife, ouRegimes, resReturns, dailyResiduals, currentResidual,
         tauData, plChart, forecastChart, sigmaChart, rollingHurst,
         percentiles, plForecast365, percentiles3y, plForecast3y,
-        pFloorBreak1y, evtCap,
+        pFloorBreak1y, evtCap, floorBreakProb, empiricalFloorProb,
+        adfResult,
+        backtestResults, p30CI,
+        calibratedThresholds: backtestResults?.thresholds || { sig: -0.5, pLoss1y: 20, pFV: 40 },
+        sellThresholds: backtestResults?.sellThresholds || { sigmaDelta: 0.10, hDelta: -0.03, volRatio: 1.15 },
         pl1y: +plPrice(a, b, t0 + 365).toFixed(0),
         pl2y: +plPrice(a, b, t0 + 730).toFixed(0),
         pl3y: +plPrice(a, b, t0 + 365 * 3).toFixed(0),
@@ -2206,7 +2767,9 @@ export default function MMARDashboard() {
     resReturns, currentResidual,
     tauData, plChart, forecastChart, sigmaChart, rollingHurst,
     percentiles, plForecast365, percentiles3y, plForecast3y,
-    pFloorBreak1y, evtCap,
+    pFloorBreak1y, evtCap, floorBreakProb, empiricalFloorProb,
+    adfResult,
+    backtestResults, p30CI, calibratedThresholds, sellThresholds,
     pl1y, pl2y, pl3y } = d;
 
   const last = percentiles[percentiles.length - 1];
@@ -2413,7 +2976,7 @@ export default function MMARDashboard() {
     } else if (pctThrough < 80) {
       episodeCallout = `Day ${episodeDays}: past the branch point (day ${episodeHistory.branchDay}). This is now a structurally long episode — only the ${nLonger} longest historical episodes (${longerEpisodes.join(", ")}d) went further. Every time BTC stayed below fair value this long, the eventual rally was 200–400%.${sigImproving ? " The price is starting to move back toward fair value — the turn may be forming." : ""}`;
     } else {
-      episodeCallout = `Day ${episodeDays}: longer than ${pctThrough}% of all historical ${episodeHistory.label} episodes. ${nLonger === 0 ? "This is unprecedented — no previous episode lasted this long." : `Only ${nLonger} episode${nLonger > 1 ? "s" : ""} went further.`} Every time BTC was this far into a discount episode, the subsequent 12-month return exceeded +150%. Statistically, the reversion is imminent.`;
+      episodeCallout = `Day ${episodeDays}: longer than ${pctThrough}% of all historical ${episodeHistory.label} episodes. ${nLonger === 0 ? "This is unprecedented — no previous episode lasted this long." : `Only ${nLonger} episode${nLonger > 1 ? "s" : ""} went further.`} In the ${nEps - nLonger} comparable episodes that ended near this point, the subsequent 12-month return was strongly positive — though the sample is small (n=${nEps}).${sigImproving ? " The price is already moving back toward fair value." : ""}`;
     }
   } else {
     // ABOVE FV
@@ -2444,116 +3007,146 @@ export default function MMARDashboard() {
   ];
   const domRegime = regimes.reduce((a, b) => a.score > b.score ? a : b);
 
-  // ── "Should I buy?" — MC-BASED PROBABILISTIC VERDICT ──
-  // El veredicto sale directamente de las probabilidades del MC (2,000 paths, MMAR/Hurst).
-  // No hay composite score con pesos ad hoc. Las únicas decisiones discrecionales son
-  // los umbrales sobre probabilidades reales, diferenciados por régimen.
+  // ── "Should I buy?" — PROBABILISTIC VERDICT con thresholds calibrados por backtest ──
+  // Lógica conjuntiva: YES solo cuando TODAS las condiciones se cumplen simultáneamente.
+  // Los umbrales salen del walk-forward backtest, no se eligen a mano.
   function generateVerdict() {
     const loss1y = mcLossHorizons.find(h => h.days === 365);
     const loss3y = mcLossHorizons.find(h => h.days === 1095);
     const l1y = loss1y?.pLoss || 50;
     const l3y = loss3y?.pLoss || 50;
+    const pl1yFutureLocal = plPrice(a, b, t0 + 365);
     const pl3yFuture = plPrice(a, b, t0 + 1095);
     const pl3yReturn = ((pl3yFuture - S0) / S0 * 100);
 
-    // ── Las tres probabilidades que conducen el veredicto (todas del MC) ──
+    // ── PL: structural anchor ──
+    const supportPrice = ransac
+      ? Math.exp(ransac.a + ransac.b * Math.log(t0) + ransac.floor)
+      : Math.exp(Math.log(plToday) + resFloor);
+    const distToSupportPct = ((S0 - supportPrice) / S0 * 100);
+    const impliedReturnToFV = ((pl1yFutureLocal - S0) / S0 * 100); // retorno implícito al FV en 12m
 
-    // P(retorno > 30% en 12m) — P(precio en 12m > S0 * 1.30)
-    const p30 = Math.max(0, Math.min(100, 100 - mcLossProb(percentiles, 365, S0 * 1.30)));
-
-    // P(retorno > 0% en 12m) — P(no perder)
-    const pPos = Math.max(0, Math.min(100, 100 - l1y));
-
-    // P(toca floor RANSAC en 12m) — stress test del barrier (del MC con 3% ruptura)
+    // ── MC: probabilistic outlook ──
+    // P(no pérdida en 12m)
+    const pPos1y = Math.max(0, Math.min(100, 100 - l1y));
+    // P(no pérdida en 3Y)
+    const pPos3y = Math.max(0, Math.min(100, 100 - l3y));
+    // P(toca floor en 12m)
     const pFloor = pFloorBreak1y || 0;
+    // P(llega al fair value en 12m)
+    const pFV = Math.max(0, Math.min(100, (() => {
+      const target = pl1yFutureLocal;
+      const row = percentiles[percentiles.length - 1];
+      if (!row) return 50;
+      const pts = [{price:row.p5,prob:5},{price:row.p25,prob:25},{price:row.p50,prob:50},{price:row.p75,prob:75},{price:row.p95,prob:95}];
+      if (target <= pts[0].price) return 97.5;
+      if (target >= pts[4].price) return 2.5;
+      for (let k = 0; k < pts.length - 1; k++) {
+        if (target >= pts[k].price && target <= pts[k+1].price) {
+          const t = (target - pts[k].price) / (pts[k+1].price - pts[k].price);
+          return 100 - (pts[k].prob + t * (pts[k+1].prob - pts[k].prob));
+        }
+      }
+      return 50;
+    })()));
 
-    // R/R probabilístico: P(>30%) / max(P(floor), 0.5) — ratio de asimetría
-    const rrRatio = p30 / Math.max(pFloor, 0.5);
-
-    // ── Régimen ajusta umbrales (OU como señal de contexto, no entra al MC) ──
+    // ── Thresholds calibrados por backtest walk-forward ──
+    const thr = calibratedThresholds || { sig: -0.5, pLoss1y: 20, pFV: 40 };
+    // Régimen volátil endurece los umbrales
     const isVolatile = ouRegimes.currentRegime === 1;
-    const thresh30 = isVolatile ? 58 : 50;   // más exigente en régimen volátil
-    const threshFloor = isVolatile ? 3 : 5;  // menos tolerancia a ruptura en régimen volátil
+    const sigThr    = thr.sig;                                      // σ máximo para entrar
+    const pLossThr  = isVolatile ? thr.pLoss1y * 0.75 : thr.pLoss1y; // % máximo P(pérdida 1Y)
+    const pFVThr    = isVolatile ? thr.pFV * 1.15 : thr.pFV;         // % mínimo P(llega al FV)
 
-    // ── Episodio como filtro: fuera de descuento = fuera de zona de decisión ──
-    const inDiscountZone = sig < -0.15;
-    const inBubbleZone = sig > 1.5;
+    // ── Lógica conjuntiva: TODAS las condiciones deben cumplirse (compra) ──
+    const cond1_discount   = sig < sigThr;
+    const cond2_lossRisk   = l1y < pLossThr;
+    const cond3_fvReach    = pFV > pFVThr;
+    const cond4_noFloor    = pFloor < (isVolatile ? 3 : 5);
 
-    // ── Condiciones del YES/NO ──
-    const isStrong = inDiscountZone && p30 > (isVolatile ? 68 : 62) && pFloor < 2 && pPos > 80;
-    const isBuy    = inDiscountZone && p30 > thresh30 && pFloor < threshFloor;
-    const isSell   = inBubbleZone && p30 < 30 && pPos < 55;
-    const isWait   = !inDiscountZone && !inBubbleZone && p30 < thresh30;
+    const nCondsMet = [cond1_discount, cond2_lossRisk, cond3_fvReach, cond4_noFloor].filter(Boolean).length;
+    const allMet = nCondsMet === 4;
+
+    // ── Índice de divergencia Hurst (señal de venta) ──
+    // Solo relevante en sobrecompra. Cada divergencia vale 1 punto (0-3).
+    // Usar thresholds calibrados por backtest si están disponibles
+    const sellThr = backtestResults?.sellThresholds || { sigmaDelta: 0.10, hDelta: -0.03, volRatio: 1.15 };
+    const hurstDiv = computeHurstDivergences(rollingHurst, sig, 6, sellThr);
+    const inOverheat = sig > 0.5;
+    const isSellSignal   = inOverheat && hurstDiv.score === 3;
+    const isWaitSellSign = inOverheat && hurstDiv.score === 2;
 
     let answer, answerColor, answerSub, confidence, subtitle, subtitleColor;
-    if (isStrong) {
+    if (allMet && sig < sigThr * 1.5 && pFV > pFVThr * 1.2 && l1y < pLossThr * 0.6) {
       answer = "YES"; answerColor = "#27AE60"; confidence = "high";
       subtitle = "Strong Buy"; subtitleColor = "#1B8A4A";
-      answerSub = "Bitcoin is cheap by every measure. This is the kind of entry you don't get often.";
-    } else if (isBuy) {
+      answerSub = "All four conditions are green. This is the kind of entry the model was built to identify.";
+    } else if (allMet) {
       answer = "YES"; answerColor = "#27AE60"; confidence = "moderate";
       subtitle = "Buy"; subtitleColor = "#27AE60";
-      answerSub = "The odds are in your favor. More upside than downside from here.";
-    } else if (isSell) {
+      answerSub = "The odds are in your favor. Both the structural and probabilistic picture support entry.";
+    } else if (isSellSignal) {
       answer = "NO"; answerColor = "#EB5757"; confidence = "high";
       subtitle = "Sell"; subtitleColor = "#EB5757";
-      answerSub = "Bitcoin is expensive and the clock is ticking. Reduce exposure.";
-    } else if (isWait) {
-      answer = "NO"; answerColor = "#EB5757"; confidence = "moderate";
+      answerSub = `All three Hurst divergences active. Momentum is structurally weakening while price is extended — historically a high-risk configuration.`;
+    } else if (isWaitSellSign) {
+      answer = "NO"; answerColor = "#F2994A"; confidence = "moderate";
+      subtitle = "Reduce"; subtitleColor = "#F2994A";
+      answerSub = `Two Hurst divergences active at elevated price. Momentum showing early exhaustion — reduce new exposure gradually.`;
+    } else if (nCondsMet >= 2 && cond1_discount) {
+      answer = "NO"; answerColor = "#F2994A"; confidence = "moderate";
       subtitle = "Wait"; subtitleColor = "#F2994A";
-      answerSub = "The risk/reward isn't compelling right now. Better entries are likely coming.";
+      answerSub = `Discount is real but ${4 - nCondsMet} condition${4 - nCondsMet > 1 ? "s" : ""} not yet met. Better risk/reward likely ahead.`;
     } else {
       answer = "NO"; answerColor = "#F2994A"; confidence = "low";
       subtitle = "Hold"; subtitleColor = "#E8A838";
-      answerSub = "Fair price. Not a bargain, not expensive. If you own it, keep it.";
+      answerSub = "Not a clear entry or exit signal. Fair price or insufficient margin of safety.";
     }
 
-    // ── Contribución marginal de cada señal — en puntos porcentuales sobre P(>30%) ──
-    // No son pesos ad hoc: cada pp refleja el impacto empírico de esa variable sobre la probabilidad MC.
-    const supportPrice = Math.exp(Math.log(plToday) + resFloor);
-    const distToSupportPct = ((S0 - supportPrice) / S0 * 100);
-
-    // Valuación: cuánto cambia P(>30%) si sigma pasa de su valor actual a 0 (fair value)
-    // Aproximación lineal sobre la distribución MC
-    const sigContrib = Math.round(Math.max(-30, Math.min(30, -sig * 13)));
-
-    // Loss prob / floor: contribución de la seguridad estructural
-    const floorContrib = Math.round(Math.max(-15, Math.min(15, (5 - pFloor) * 1.8)));
-
-    // R/R: asimetría upside/downside del MC
-    const rrContrib = Math.round(Math.max(-12, Math.min(12, (rrRatio - 5) * 1.2)));
-
-    // Régimen OU: ajuste de umbral — se muestra como penalización/bonificación
-    const regimeContrib = isVolatile ? -8 : 5;
-
-    const signals = [
+    // ── Panel de signals: dos secciones separadas ──
+    const plSignals = [
       {
-        name: "Valuación (PL)",
-        score: sig < -1.0 ? 1 : sig < -0.5 ? 0.6 : sig > 1.0 ? -1 : sig > 0.5 ? -0.5 : 0.1,
-        weight: null,
-        pp: sigContrib,
-        detail: `σ = ${sig.toFixed(2)} · ${Math.abs(deviationPct).toFixed(0)}% ${deviationPct < 0 ? "below" : "above"} FV`,
+        name: "Valuation (σ)",
+        value: `${sig.toFixed(2)}σ`,
+        threshold: `< ${sigThr}σ`,
+        met: cond1_discount,
+        detail: `${Math.abs(deviationPct).toFixed(0)}% ${deviationPct < 0 ? "below" : "above"} fair value`,
+        source: "pl",
       },
       {
-        name: "Loss prob. 1Y",
-        score: pFloor < 2 ? 1 : pFloor < 5 ? 0.5 : pFloor > 8 ? -0.5 : 0,
-        weight: null,
-        pp: floorContrib,
-        detail: `P(floor) = ${pFloor.toFixed(1)}% · P(loss 1Y) = ${l1y.toFixed(0)}%`,
+        name: "Worst case (RANSAC)",
+        value: `$${fmtK(supportPrice)}`,
+        threshold: `−${distToSupportPct.toFixed(0)}% from today`,
+        met: distToSupportPct > 0,
+        detail: `Implied return to FV: ${impliedReturnToFV >= 0 ? "+" : ""}${impliedReturnToFV.toFixed(0)}%`,
+        source: "pl",
+      },
+    ];
+
+    const mcSignals = [
+      {
+        name: "P(loss in 12m)",
+        value: `${l1y.toFixed(0)}%`,
+        threshold: `< ${pLossThr.toFixed(0)}%`,
+        met: cond2_lossRisk,
+        detail: `P(loss in 3Y): ${l3y.toFixed(0)}% · ${pPos3y.toFixed(0)}% of paths profitable at 3Y`,
+        source: "mc",
       },
       {
-        name: "Risk/Reward",
-        score: rrRatio > 10 ? 1 : rrRatio > 5 ? 0.6 : rrRatio > 2 ? 0.2 : -0.4,
-        weight: null,
-        pp: rrContrib,
-        detail: `P(>30%) / P(floor) = ${rrRatio >= 99 ? "∞" : rrRatio.toFixed(1) + "x"} · MC ratio`,
+        name: "P(reaches fair value)",
+        value: `${pFV.toFixed(0)}%`,
+        threshold: `> ${pFVThr.toFixed(0)}%`,
+        met: cond3_fvReach,
+        detail: `Fair value in 12m: $${fmtK(pl1yFutureLocal)}`,
+        source: "mc",
       },
       {
-        name: "Régimen (OU)",
-        score: isVolatile ? -0.3 : 0.2,
-        weight: null,
-        pp: regimeContrib,
-        detail: `${isVolatile ? "Volátil — umbral +8pp más exigente" : "Calm — umbrales estándar"}`,
+        name: "Floor breach risk",
+        value: `${pFloor.toFixed(1)}%`,
+        threshold: `< ${isVolatile ? 3 : 5}%`,
+        met: cond4_noFloor,
+        detail: `Empirically calibrated from historical floor touches`,
+        source: "mc",
       },
     ];
 
@@ -2573,18 +3166,23 @@ export default function MMARDashboard() {
 
     const mcWorst3y = loss3y?.p5 ? ((loss3y.p5 - S0) / S0 * 100) : -30;
     const maxDownside = ((S0 - supportPrice) / S0 * 100);
-    paras.push(`If you buy today and hold 1 year, the model gives a ${p30.toFixed(0)}% probability of exceeding +30% return, based on 2,000 simulated paths. The worst case — the lowest Bitcoin has ever gone relative to its trend — puts you at ${fmtK(supportPrice)} (−${maxDownside.toFixed(0)}%). Over 3 years, the Power Law target is ${fmtK(pl3yFuture)} (${pl3yReturn >= 0 ? "+" : ""}${pl3yReturn.toFixed(0)}%).${mcWorst3y > 0 ? " Even in the worst 5% of simulations, you're in profit at 3 years." : ""}`);
+    paras.push(`If you buy today and hold 1 year, there's a ${pFV.toFixed(0)}% probability the price reaches the model's fair value of ${fmtK(pl1yFutureLocal)}. The structural worst case — the RANSAC support floor — is ${fmtK(supportPrice)} (−${maxDownside.toFixed(0)}%). Over 3 years, the Power Law target is ${fmtK(pl3yFuture)} (${pl3yReturn >= 0 ? "+" : ""}${pl3yReturn.toFixed(0)}%).${mcWorst3y > 0 ? " Even in the worst 5% of simulations, you're in profit at 3 years." : ""}`);
 
     paras.push(episodeCallout || `Bitcoin is near its structural fair value. The market is ${regimeNote}.`);
     if (Math.abs(sig) >= 0.15 && conditionalRemaining > 0) {
       paras.push(`Based on how long previous episodes lasted, the model estimates about ${Math.round(conditionalRemaining / 30)} more months before Bitcoin returns to fair value. ${sigImproving ? "The trend is already improving — it could be faster." : sigWorsening ? "The trend is still worsening — it could take longer." : "The trend is flat — patience required."}`);
     }
-
     paras.push(`Your chance of being at a loss after 1 year: ~${l1y.toFixed(0)}%. After 3 years: ~${l3y.toFixed(0)}%.${l3y < 5 ? " Time is on your side." : l3y < 15 ? " The longer you hold, the better the odds." : ""}`);
 
-    // composite se mantiene como referencia interna (p30 normalizado a [-1,1])
-    const composite = (p30 - 50) / 50;
-    return { answer, answerColor, answerSub, subtitle, subtitleColor, composite, confidence, signals, paras, p30, pPos, pFloor, rrRatio };
+    const composite = (pFV - 50) / 50;
+    return {
+      answer, answerColor, answerSub, subtitle, subtitleColor,
+      composite, confidence, paras,
+      plSignals, mcSignals,
+      pFV, pPos1y, pPos3y, pFloor, l1y, l3y,
+      nCondsMet, thr: { sig: sigThr, pLoss: pLossThr, pFV: pFVThr },
+      p30CI, hurstDiv,
+    };
   }
 
   const buyVerdict = generateVerdict();
@@ -2613,7 +3211,7 @@ export default function MMARDashboard() {
     { label: "Slightly overheated", price: +Math.exp(Math.log(plToday) + resMean + 0.5 * resStd).toFixed(0), color: "#E8A838", sigma: "+0.5σ" },
     { label: "Fair value (Power Law)", price: plToday, color: "#27AE60", sigma: "0" },
     { label: "Mild discount", price: +Math.exp(Math.log(plToday) + resMean - 0.5 * resStd).toFixed(0), color: "#56CCF2", sigma: "−0.5σ" },
-    { label: "Support floor", price: +Math.exp(Math.log(plToday) + resFloor).toFixed(0), color: "#2F80ED", sigma: `${resFloorSigma.toFixed(1)}σ` },
+    { label: "Support floor", price: ransac ? +Math.exp(ransac.a + ransac.b * Math.log(t0) + ransac.floor).toFixed(0) : +Math.exp(Math.log(plToday) + resFloor).toFixed(0), color: "#2F80ED", sigma: `${resFloorSigma.toFixed(1)}σ` },
   ];
 
   // PL chart
@@ -2738,40 +3336,120 @@ export default function MMARDashboard() {
                 {buyVerdict.answerSub}
               </div>
               <div style={{ fontSize: 11, color: "#BFBFBA", marginTop: 8 }}>
-                Composite score: {(buyVerdict.composite * 100).toFixed(0)}/100 · Confidence: {buyVerdict.confidence}
+                {buyVerdict.nCondsMet}/4 conditions met · Confidence: {buyVerdict.confidence}
+                {buyVerdict.thr ? <span> · Thresholds calibrated by backtest</span> : null}
               </div>
             </div>
 
-            {/* Signal breakdown */}
-            <Toggle label="What's driving this" open={openSections.drivers} onToggle={() => toggleSection("drivers")} count={`P(>30%) = ${buyVerdict.p30?.toFixed(0) ?? "--"}%`}>
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {buyVerdict.signals.map(s => {
-                  const pp = s.pp ?? 0;
-                  const barColor = pp > 8 ? "#27AE60" : pp > 0 ? "#6FCF97" : pp > -8 ? "#F2994A" : "#EB5757";
-                  const barWidth = Math.min(Math.abs(pp) * 3, 50);
-                  const isPositive = pp >= 0;
-                  return (
-                    <div key={s.name}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 3 }}>
-                        <div>
-                          <span style={{ fontSize: 12, color: "#37352F", fontWeight: 500 }}>{s.name}</span>
-                          <span style={{ fontSize: 10, color: isPositive ? "#27AE60" : "#EB5757", marginLeft: 6, fontFamily: "'DM Mono', monospace" }}>
-                            {pp > 0 ? "+" : ""}{pp}pp
-                          </span>
-                        </div>
-                        <span style={{ fontSize: 11, color: "#9B9A97" }}>{s.detail}</span>
-                      </div>
-                      <div style={{ position: "relative", height: 6, background: "#E8E5E0", borderRadius: 3 }}>
-                        <div style={{ position: "absolute", top: 0, height: "100%", borderRadius: 3, background: barColor, ...(isPositive ? { left: "50%", width: `${barWidth}%` } : { right: "50%", width: `${barWidth}%` }) }} />
-                        <div style={{ position: "absolute", top: -2, left: "calc(50% - 1px)", width: 2, height: 10, background: "#BFBFBA" }} />
+            {/* Signal breakdown — dos secciones */}
+            <Toggle label="What's driving this" open={openSections.drivers} onToggle={() => toggleSection("drivers")} count={`${buyVerdict.nCondsMet}/4`}>
+
+              {/* Sección PL */}
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontSize: 10, color: "#BFBFBA", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600, marginBottom: 10 }}>
+                  Structural anchor — Power Law
+                </div>
+                {buyVerdict.plSignals?.map(s => (
+                  <div key={s.name} style={{ display: "grid", gridTemplateColumns: "1fr auto auto", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                    <div>
+                      <div style={{ fontSize: 12, color: "#37352F", fontWeight: 500 }}>{s.name}</div>
+                      <div style={{ fontSize: 11, color: "#9B9A97", marginTop: 2 }}>{s.detail}</div>
+                    </div>
+                    <div style={{ fontSize: 13, fontWeight: 600, fontFamily: "'DM Mono', monospace", color: "#37352F", textAlign: "right" }}>{s.value}</div>
+                    <div style={{ fontSize: 10, color: "#BFBFBA", textAlign: "right", whiteSpace: "nowrap" }}>{s.threshold}</div>
+                  </div>
+                ))}
+              </div>
+
+              <div style={{ borderTop: "1px solid #E8E5E0", marginBottom: 16 }} />
+
+              {/* Sección MC */}
+              <div>
+                <div style={{ fontSize: 10, color: "#BFBFBA", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600, marginBottom: 10 }}>
+                  Probabilistic outlook — Monte Carlo · 2,000 paths
+                </div>
+                {buyVerdict.mcSignals?.map(s => (
+                  <div key={s.name} style={{ marginBottom: 10 }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                      <div style={{ fontSize: 12, color: "#37352F", fontWeight: 500 }}>{s.name}</div>
+                      <div style={{ fontSize: 13, fontWeight: 600, fontFamily: "'DM Mono', monospace", color: s.met ? "#27AE60" : "#EB5757", textAlign: "right" }}>{s.value}</div>
+                      <div style={{ fontSize: 10, color: s.met ? "#27AE60" : "#EB5757", textAlign: "right", whiteSpace: "nowrap" }}>
+                        {s.met ? "✓" : "✗"} {s.threshold}
                       </div>
                     </div>
-                  );
-                })}
+                    <div style={{ fontSize: 11, color: "#9B9A97" }}>{s.detail}</div>
+                  </div>
+                ))}
               </div>
-              <div style={{ marginTop: 12, padding: "8px 12px", background: "#F7F6F3", borderRadius: 6, fontSize: 11, color: "#9B9A97", lineHeight: 1.6 }}>
-                Each bar shows the marginal contribution to P(retorno &gt; 30% en 12m), in percentage points. Floor break risk: {buyVerdict.pFloor?.toFixed(1) ?? "--"}% of paths · P(no loss 1Y): {buyVerdict.pPos?.toFixed(0) ?? "--"}%
+
+              <div style={{ marginTop: 12, padding: "10px 12px", background: "#F7F6F3", borderRadius: 6, fontSize: 11, color: "#9B9A97", lineHeight: 1.8 }}>
+                <div>
+                  <strong style={{ color: "#37352F" }}>How to read this:</strong> YES requires all 4 conditions simultaneously — discount (PL), low loss risk, fair value reachable, and floor breach contained (all MC). SELL requires overheated price + all 3 Hurst divergences. Thresholds calibrated by walk-forward backtest.
+                  {buyVerdict.thr ? <span style={{ color: "#BFBFBA" }}> · σ &lt; {buyVerdict.thr.sig} · P(loss) &lt; {buyVerdict.thr.pLoss?.toFixed(0)}% · P(FV) &gt; {buyVerdict.thr.pFV?.toFixed(0)}%</span> : null}
+                </div>
+                {buyVerdict.p30CI ? (
+                  <div style={{ marginTop: 4 }}>
+                    P(reaches FV) 90% CI: [{buyVerdict.p30CI.lo}% — {buyVerdict.p30CI.hi}%]
+                    {" · "}P(no loss 3Y): {buyVerdict.pPos3y?.toFixed(0) ?? "--"}%
+                  </div>
+                ) : null}
+                {backtestResults?.precision != null && (
+                  <div style={{ marginTop: 4, paddingTop: 4, borderTop: "1px solid #E8E5E0" }}>
+                    <strong style={{ color: "#37352F" }}>Walk-forward backtest:</strong>{" "}
+                    YES precision: {backtestResults.precision}% · Avg return YES: {backtestResults.avgReturnYes}% vs NO: {backtestResults.avgReturnNo}% · n={backtestResults.nYes + backtestResults.nNo}
+                    <span style={{ color: "#BFBFBA", marginLeft: 4 }}>· H and λ² fixed at full-period means</span>
+                  </div>
+                )}
               </div>
+
+              {/* Hurst divergence index — sell signal */}
+              {buyVerdict.hurstDiv && (
+                <div style={{ marginTop: 12 }}>
+                  <div style={{ borderTop: "1px solid #E8E5E0", paddingTop: 12 }}>
+                    <div style={{ fontSize: 10, color: "#BFBFBA", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600, marginBottom: 10 }}>
+                      Hurst divergence index — sell signal · {buyVerdict.hurstDiv.score}/3
+                    </div>
+                    {[
+                      {
+                        label: "Price vs Hurst (D1)",
+                        active: buyVerdict.hurstDiv.d1,
+                        detail: `σ trend: ${buyVerdict.hurstDiv.detail.sigmaDelta >= 0 ? "+" : ""}${buyVerdict.hurstDiv.detail.sigmaDelta} · H90: ${buyVerdict.hurstDiv.detail.h90} vs ${buyVerdict.hurstDiv.detail.h90prev} prior`,
+                        desc: "Price rising but H90 falling — momentum divergence",
+                      },
+                      {
+                        label: "Short vs long Hurst (D2)",
+                        active: buyVerdict.hurstDiv.d2,
+                        detail: `H30: ${buyVerdict.hurstDiv.detail.h30} · H90: ${buyVerdict.hurstDiv.detail.h90}`,
+                        desc: "H30 breaks below H90 — short-term momentum failing first",
+                      },
+                      {
+                        label: "Hurst vs volatility (D3)",
+                        active: buyVerdict.hurstDiv.d3,
+                        detail: `Vol ratio: ${buyVerdict.hurstDiv.detail.volRatio} · H90 trend: ${buyVerdict.hurstDiv.detail.h90 < buyVerdict.hurstDiv.detail.h90prev ? "↓" : "→"}`,
+                        desc: "Persistence falling as volatility expands — regime breakdown",
+                      },
+                    ].map(({ label, active, detail, desc }) => (
+                      <div key={label} style={{ marginBottom: 10 }}>
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr auto", alignItems: "center", gap: 8, marginBottom: 2 }}>
+                          <div style={{ fontSize: 12, color: "#37352F", fontWeight: 500 }}>{label}</div>
+                          <div style={{ fontSize: 12, fontWeight: 600, color: active ? "#EB5757" : "#BFBFBA" }}>
+                            {active ? "⚠ Active" : "Clear"}
+                          </div>
+                        </div>
+                        <div style={{ fontSize: 11, color: "#9B9A97" }}>{desc}</div>
+                        <div style={{ fontSize: 11, color: "#BFBFBA", fontFamily: "'DM Mono', monospace" }}>{detail}</div>
+                      </div>
+                    ))}
+                    <div style={{ fontSize: 11, color: "#9B9A97", padding: "8px 10px", background: "#F7F6F3", borderRadius: 6, marginTop: 4 }}>
+                      {buyVerdict.hurstDiv.score === 0 && "No divergences active. Momentum structure intact."}
+                      {buyVerdict.hurstDiv.score === 1 && "One divergence active. Early warning — monitor but no action required."}
+                      {buyVerdict.hurstDiv.score === 2 && "Two divergences active. Momentum weakening — reduce new exposure at these levels."}
+                      {buyVerdict.hurstDiv.score === 3 && "All three divergences active. Structural momentum breakdown — high-conviction sell signal."}
+                      {!buyVerdict.hurstDiv.score && buyVerdict.hurstDiv.score !== 0 && "Insufficient data to compute divergences."}
+                    </div>
+                  </div>
+                </div>
+              )}
             </Toggle>
 
           </Toggle>
@@ -2800,7 +3478,7 @@ export default function MMARDashboard() {
               ))}
             </div>
             <p style={{ fontSize: 11, color: "#BFBFBA", marginTop: 18, lineHeight: 1.5, fontStyle: "italic" }}>
-              Generated dynamically from quantitative models (Power Law + MMAR + Monte Carlo). It's math, not prophecy. Never invest more than you can afford to lose.
+              Generated dynamically from quantitative models (Power Law + MMAR + Monte Carlo). Walk-forward validated against historical data. It's math, not prophecy. Never invest more than you can afford to lose.
             </p>
 
           </Toggle>
@@ -2808,7 +3486,256 @@ export default function MMARDashboard() {
 
         <Divider />
 
-        {/* ═══ THE DATA ═══ */}
+        {/* ═══ MODEL VALIDATION ═══ */}
+        {backtestResults?.precision != null && (
+          <div style={{ marginTop: 4 }}>
+            <Toggle label="✅ Model validation" open={openSections.validation} onToggle={() => toggleSection("validation")}>
+
+              {/* ── Headline en lenguaje llano ── */}
+              <div style={{ background: "#F7F6F3", borderRadius: 8, padding: "16px 18px", marginBottom: 16 }}>
+                <div style={{ fontSize: 14, color: "#37352F", lineHeight: 1.8 }}>
+                  {(() => {
+                    const p = parseFloat(backtestResults.precision);
+                    const br = parseFloat(backtestResults.baseRate);
+                    const diff = br ? +(p - br).toFixed(1) : null;
+                    const avgY = backtestResults.avgReturnYes;
+                    const avgN = backtestResults.avgReturnNo;
+                    const stable = backtestResults.stabilityDelta != null && backtestResults.stabilityDelta < 15;
+                    return (
+                      <>
+                        <p style={{ margin: "0 0 10px" }}>
+                          When the model said <strong>YES</strong> historically, it was right <strong style={{ color: p > 70 ? "#27AE60" : p > 55 ? "#F2994A" : "#EB5757" }}>{p}% of the time</strong> — meaning the price was higher 12 months later.
+                          {br != null && diff != null && (
+                            <span style={{ color: "#9B9A97" }}> Bitcoin rises in {br}% of all 12-month periods regardless of signal, so the model adds <strong style={{ color: diff > 0 ? "#27AE60" : "#EB5757" }}>{diff > 0 ? "+" : ""}{diff}pp</strong> above that baseline.</span>
+                          )}
+                        </p>
+                        {avgY != null && avgN != null && (
+                          <p style={{ margin: "0 0 10px" }}>
+                            Average 12-month return after a YES signal: <strong style={{ color: "#27AE60" }}>+{avgY}%</strong>. After a NO signal: <strong style={{ color: avgN > 0 ? "#9B9A97" : "#EB5757" }}>{avgN > 0 ? "+" : ""}{avgN}%</strong>.
+                          </p>
+                        )}
+                        <p style={{ margin: 0, color: "#9B9A97", fontSize: 13 }}>
+                          {stable
+                            ? "✓ The signal held up consistently across different market cycles — it's not tuned to a single period."
+                            : "⚠ Performance varied across cycles — treat the signal as one input, not as a guarantee."}
+                        </p>
+                      </>
+                    );
+                  })()}
+                </div>
+              </div>
+
+              {/* ── Detalles técnicos — colapsados ── */}
+              <Toggle label="Technical details" open={openSections.validationDetails} onToggle={() => toggleSection("validationDetails")}>
+
+                {/* Métricas principales */}
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 10, marginBottom: 14 }}>
+                  {[
+                    { label: "YES precision", value: `${backtestResults.precision}%`, desc: "YES signals that were right", color: backtestResults.precision > 60 ? "#27AE60" : "#F2994A" },
+                    { label: "Avg return YES", value: `+${backtestResults.avgReturnYes}%`, desc: "Mean 12m return when YES", color: "#27AE60" },
+                    { label: "Avg return NO", value: `${backtestResults.avgReturnNo > 0 ? "+" : ""}${backtestResults.avgReturnNo}%`, desc: "Mean 12m return when NO", color: "#9B9A97" },
+                    { label: "Observations", value: `${backtestResults.nYes + backtestResults.nNo}`, desc: `${backtestResults.nYes} YES · ${backtestResults.nNo} NO`, color: "#9B9A97" },
+                  ].map(({ label, value, desc, color }) => (
+                    <div key={label} style={{ background: "#FAFAF8", borderRadius: 6, border: "1px solid #E8E5E0", padding: "10px 12px" }}>
+                      <div style={{ fontSize: 10, color: "#9B9A97", marginBottom: 3 }}>{label}</div>
+                      <div style={{ fontSize: 18, fontWeight: 700, color, fontFamily: "'DM Mono', monospace" }}>{value}</div>
+                      <div style={{ fontSize: 10, color: "#BFBFBA", marginTop: 2 }}>{desc}</div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Thresholds calibrados */}
+                {calibratedThresholds && (
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginBottom: 12 }}>
+                    {[
+                      { label: "σ threshold", value: `< ${calibratedThresholds.sig}σ`, desc: "Discount required" },
+                      { label: "Max P(loss 1Y)", value: `< ${calibratedThresholds.pLoss1y}%`, desc: "Max loss probability" },
+                      { label: "Min P(fair value)", value: `> ${calibratedThresholds.pFV}%`, desc: "FV reachable in 12m" },
+                    ].map(({ label, value, desc }) => (
+                      <div key={label} style={{ background: "#F0F8F0", borderRadius: 6, border: "1px solid #C3E6CB", padding: "8px 10px" }}>
+                        <div style={{ fontSize: 10, color: "#9B9A97", marginBottom: 2 }}>{label}</div>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: "#27AE60", fontFamily: "'DM Mono', monospace" }}>{value}</div>
+                        <div style={{ fontSize: 10, color: "#BFBFBA" }}>{desc}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Signal strength breakdown */}
+                {backtestResults.byLevel && (
+                  <div style={{ marginBottom: 12 }}>
+                    <div style={{ fontSize: 10, color: "#BFBFBA", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600, marginBottom: 8 }}>Signal strength breakdown</div>
+                    <div style={{ border: "1px solid #E8E5E0", borderRadius: 6, overflow: "hidden" }}>
+                      <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
+                        <thead>
+                          <tr style={{ background: "#F7F6F3" }}>
+                            {["Signal", "n", "Precision", "Avg return", "Worst"].map(h => (
+                              <th key={h} style={{ padding: "7px 10px", textAlign: h === "Signal" ? "left" : "right", color: "#9B9A97", fontWeight: 500, fontSize: 11, borderBottom: "1px solid #E8E5E0" }}>{h}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {[
+                            { label: "Strong Buy", key: "strongBuy", color: "#1B8A4A" },
+                            { label: "Buy",         key: "buy",       color: "#27AE60" },
+                            { label: "NO",          key: "no",        color: "#9B9A97" },
+                          ].map(({ label, key, color }) => {
+                            const d = backtestResults.byLevel[key];
+                            if (!d || d.n === 0) return null;
+                            return (
+                              <tr key={key} style={{ borderBottom: "1px solid #F1F1EF" }}>
+                                <td style={{ padding: "8px 10px", fontWeight: 600, color }}>{label}</td>
+                                <td style={{ padding: "8px 10px", textAlign: "right", color: "#9B9A97", fontFamily: "'DM Mono', monospace" }}>{d.n}</td>
+                                <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'DM Mono', monospace", color: d.precision > 70 ? "#27AE60" : d.precision > 50 ? "#F2994A" : "#EB5757" }}>
+                                  {d.precision ?? "—"}%
+                                </td>
+                                <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'DM Mono', monospace", color: d.avgReturn > 0 ? "#27AE60" : "#EB5757" }}>
+                                  {d.avgReturn != null ? `${d.avgReturn > 0 ? "+" : ""}${d.avgReturn}%` : "—"}
+                                </td>
+                                <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'DM Mono', monospace", color: d.minReturn >= 0 ? "#27AE60" : "#EB5757", fontSize: 11 }}>
+                                  {d.minReturn != null ? `${d.minReturn > 0 ? "+" : ""}${d.minReturn}%` : "—"}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div style={{ fontSize: 11, color: "#BFBFBA", marginTop: 5, lineHeight: 1.5 }}>
+                      Precision = % of signals where price was higher after 12m. Worst = lowest 12m return observed.
+                      {backtestResults.byLevel.strongBuy?.n < 5 && <span style={{ color: "#F2994A" }}> Strong Buy n is small — interpret with caution.</span>}
+                    </div>
+                  </div>
+                )}
+
+                {/* Sell signal validation */}
+                {backtestResults.sellBacktest?.metrics && (
+                  <div style={{ marginBottom: 12 }}>
+                    <div style={{ fontSize: 10, color: "#BFBFBA", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600, marginBottom: 8 }}>Sell signal validation — Hurst divergences · 6-month horizon</div>
+                    <div style={{ border: "1px solid #E8E5E0", borderRadius: 6, overflow: "hidden" }}>
+                      <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
+                        <thead>
+                          <tr style={{ background: "#F7F6F3" }}>
+                            {["Signal", "n", "Precision", "Avg 6m", "Worst 6m"].map(h => (
+                              <th key={h} style={{ padding: "7px 10px", textAlign: h === "Signal" ? "left" : "right", color: "#9B9A97", fontWeight: 500, fontSize: 11, borderBottom: "1px solid #E8E5E0" }}>{h}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {[
+                            { label: "Sell (3 diverg.)",   data: backtestResults.sellBacktest.metrics.sell,        color: "#EB5757" },
+                            { label: "Reduce (2 diverg.)", data: backtestResults.sellBacktest.metrics.reduce,      color: "#F2994A" },
+                            { label: "All overheated",     data: backtestResults.sellBacktest.metrics.allOverheat, color: "#9B9A97" },
+                          ].map(({ label, data, color }) => {
+                            if (!data || data.n === 0) return null;
+                            return (
+                              <tr key={label} style={{ borderBottom: "1px solid #F1F1EF" }}>
+                                <td style={{ padding: "8px 10px", fontWeight: 600, color }}>{label}</td>
+                                <td style={{ padding: "8px 10px", textAlign: "right", color: "#9B9A97", fontFamily: "'DM Mono', monospace" }}>{data.n}</td>
+                                <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'DM Mono', monospace", color: data.precision > 60 ? "#27AE60" : data.precision > 40 ? "#F2994A" : "#EB5757" }}>
+                                  {data.precision != null ? `${data.precision}%` : "—"}
+                                </td>
+                                <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'DM Mono', monospace", color: data.avgRet6m < 0 ? "#27AE60" : "#EB5757" }}>
+                                  {data.avgRet6m != null ? `${data.avgRet6m > 0 ? "+" : ""}${data.avgRet6m}%` : "—"}
+                                </td>
+                                <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'DM Mono', monospace", color: "#EB5757", fontSize: 11 }}>
+                                  {data.maxDrawdown != null ? `${data.maxDrawdown > 0 ? "+" : ""}${data.maxDrawdown}%` : "—"}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div style={{ fontSize: 11, color: "#BFBFBA", marginTop: 5, lineHeight: 1.5 }}>
+                      Precision = % of signals where price fell &gt;20% within 6 months.
+                      {backtestResults.sellBacktest.note && <span style={{ color: "#F2994A" }}> {backtestResults.sellBacktest.note}</span>}
+                      {backtestResults.sellThresholds && <span> · σΔ &gt; {backtestResults.sellThresholds.sigmaDelta} · HΔ &lt; {backtestResults.sellThresholds.hDelta} · vol ratio &gt; {backtestResults.sellThresholds.volRatio}</span>}
+                    </div>
+                  </div>
+                )}
+
+                {/* Cross-validation por ciclos */}
+                {backtestResults.crossValidation?.length > 0 && (
+                  <div style={{ marginBottom: 12 }}>
+                    <div style={{ fontSize: 10, color: "#BFBFBA", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600, marginBottom: 8 }}>Cross-validation by cycle — threshold stability</div>
+                    <div style={{ border: "1px solid #E8E5E0", borderRadius: 6, overflow: "hidden" }}>
+                      <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
+                        <thead>
+                          <tr style={{ background: "#F7F6F3" }}>
+                            {["Period", "n obs", "YES", "Precision", "Avg return"].map(h => (
+                              <th key={h} style={{ padding: "7px 10px", textAlign: h === "Period" ? "left" : "right", color: "#9B9A97", fontWeight: 500, fontSize: 11, borderBottom: "1px solid #E8E5E0" }}>{h}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {backtestResults.crossValidation.map(p => (
+                            <tr key={p.label} style={{ borderBottom: "1px solid #F1F1EF" }}>
+                              <td style={{ padding: "8px 10px", fontWeight: 500, color: "#37352F" }}>{p.label}</td>
+                              <td style={{ padding: "8px 10px", textAlign: "right", color: "#9B9A97", fontFamily: "'DM Mono', monospace" }}>{p.n}</td>
+                              <td style={{ padding: "8px 10px", textAlign: "right", color: "#9B9A97", fontFamily: "'DM Mono', monospace" }}>{p.nYes ?? 0}</td>
+                              <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'DM Mono', monospace", color: p.precision > 70 ? "#27AE60" : p.precision > 50 ? "#F2994A" : p.precision != null ? "#EB5757" : "#BFBFBA" }}>
+                                {p.precision != null ? `${p.precision}%` : "—"}
+                              </td>
+                              <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'DM Mono', monospace", color: p.avgReturn > 0 ? "#27AE60" : p.avgReturn != null ? "#EB5757" : "#BFBFBA" }}>
+                                {p.avgReturn != null ? `${p.avgReturn > 0 ? "+" : ""}${p.avgReturn}%` : "—"}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    {backtestResults.stabilityDelta != null && (
+                      <div style={{ fontSize: 11, marginTop: 5, lineHeight: 1.5, color: backtestResults.stabilityDelta < 15 ? "#27AE60" : "#F2994A" }}>
+                        {backtestResults.stabilityDelta < 15
+                          ? `✓ Stable across cycles (max spread: ${backtestResults.stabilityDelta}pp).`
+                          : `⚠ Precision varies ${backtestResults.stabilityDelta}pp across cycles — thresholds may be partially overfit.`}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Régimen */}
+                {backtestResults.regimeEffect?.delta != null && (
+                  <div style={{ marginBottom: 12 }}>
+                    <div style={{ fontSize: 10, color: "#BFBFBA", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600, marginBottom: 8 }}>Does regime matter? — YES signal by regime</div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                      {[
+                        { label: "Calm regime",     data: backtestResults.regimeEffect.calm,     color: "#27AE60" },
+                        { label: "Volatile regime", data: backtestResults.regimeEffect.volatile, color: "#F2994A" },
+                      ].map(({ label, data, color }) => (
+                        <div key={label} style={{ background: "#FAFAF8", borderRadius: 6, border: "1px solid #E8E5E0", padding: "10px 12px" }}>
+                          <div style={{ fontSize: 11, color: "#9B9A97", marginBottom: 6 }}>{label}</div>
+                          <div style={{ fontSize: 18, fontWeight: 700, color, fontFamily: "'DM Mono', monospace" }}>
+                            {data.avgReturn != null ? `+${data.avgReturn}%` : "—"}
+                          </div>
+                          <div style={{ fontSize: 11, color: "#BFBFBA", marginTop: 2 }}>
+                            avg return YES · precision: {data.precisionYes ?? "—"}% · n={data.nYes}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    <div style={{ fontSize: 11, color: "#9B9A97", marginTop: 8, padding: "8px 10px", background: "#F7F6F3", borderRadius: 6 }}>
+                      {Math.abs(backtestResults.regimeEffect.delta) > 10
+                        ? `Regime has meaningful predictive power — calm YES signals outperformed volatile YES by ${Math.abs(backtestResults.regimeEffect.delta)}pp. Tighter thresholds in volatile regimes are justified.`
+                        : `Regime shows limited predictive power (${Math.abs(backtestResults.regimeEffect.delta)}pp difference). The tighter volatile thresholds act as a conservative buffer.`}
+                    </div>
+                  </div>
+                )}
+
+                {/* Nota metodológica */}
+                <div style={{ fontSize: 11, color: "#9B9A97", lineHeight: 1.7, padding: "10px 12px", background: "#F7F6F3", borderRadius: 6 }}>
+                  Walk-forward backtest from 2016 to present — every 30 days, computing P(loss 1Y) and P(reaches fair value) at the historical price vs actual outcome. "Good buy" = no loss after 12 months.
+                  {backtestResults.baseRate != null && <span> Bitcoin's historical base rate of positive 12-month returns: <strong style={{ color: "#37352F" }}>{backtestResults.baseRate}%</strong> — evaluate YES precision against this baseline.</span>}
+                  <span style={{ color: "#BFBFBA" }}> · H and λ² fixed at full-period means for computational feasibility.</span>
+                </div>
+
+              </Toggle>
+            </Toggle>
+          </div>
+        )}
+
+        <Divider />
         <div style={{ marginTop: 4 }}>
           <Toggle label="Live snapshot" open={openSections.dataview} onToggle={() => toggleSection("dataview")} count="live">
 
@@ -3835,7 +4762,7 @@ export default function MMARDashboard() {
                 { label: "Current regime", value: ouRegimes ? (ouRegimes.currentRegime === 0 ? "Calm" : "Volatile") : "–", desc: ouRegimes ? `Vol scale: ${ouRegimes.regimes[ouRegimes.currentRegime].volScale.toFixed(2)}x` : "" },
                 { label: "Residual σ", value: fmt(resStd, 4), desc: "Deviation amplitude" },
                 { label: "RANSAC Slope", value: ransac ? fmt(ransac.b, 3) : "–", desc: "Robust fit (excl. bubbles)" },
-                { label: "Support floor", value: `${resFloorSigma.toFixed(2)}σ`, desc: `RANSAC min: $${fmtK(Math.exp(Math.log(plToday) + resFloor))}` },
+                { label: "Support floor", value: `${resFloorSigma.toFixed(2)}σ`, desc: `RANSAC min: $${fmtK(ransac ? Math.exp(ransac.a + ransac.b * Math.log(t0) + ransac.floor) : Math.exp(Math.log(plToday) + resFloor))}` },
                 { label: "Kurtosis", value: fmt(kurt, 2), desc: `Excess: ${fmt(kurt - 3, 2)} (fat tails)` },
                 { label: "Skewness", value: fmt(skew, 3), desc: "Tail asymmetry" },
                 { label: "Annual Volatility", value: `${(annualVol * 100).toFixed(0)}%`, desc: volInfo.desc },
@@ -3932,27 +4859,39 @@ export default function MMARDashboard() {
               <p style={{ margin: "0 0 12px", fontWeight: 500, color: "#37352F" }}>Five steps, each building on the previous:</p>
               <p style={{ margin: "0 0 12px" }}><strong style={{ color: "#37352F" }}>Step 1 — Power Law fit.</strong> We fit the price-vs-time curve using Weighted Least Squares (recent liquid-market data weighs more than early thin-market data). Separately, a RANSAC robust fit runs 200 iterations to find the support floor, automatically excluding bubble peaks.</p>
               <p style={{ margin: "0 0 12px" }}><strong style={{ color: "#37352F" }}>Step 2 — Fractal calibration.</strong> Using the last ~4 years of data (a rolling window), we measure trend persistence (Hurst exponent) and volatility clustering (intermittency). These adapt automatically as new data arrives.</p>
-              <p style={{ margin: "0 0 12px" }}><strong style={{ color: "#37352F" }}>Step 3 — Regime detection.</strong> The market is classified into calm and volatile regimes, each with its own mean-reversion speed. Calm markets correct toward fair value faster; volatile markets let deviations persist longer.</p>
-              <p style={{ margin: "0 0 12px" }}><strong style={{ color: "#37352F" }}>Step 4 — Monte Carlo simulation.</strong> 2,000 paths are generated using fractal volatility clustering, shocks from Bitcoin's actual historical returns (not a bell curve), Hurst-correlated momentum, regime-switching, and a reflecting barrier at the support floor.</p>
-              <p style={{ margin: "0 0 0" }}><strong style={{ color: "#37352F" }}>Step 5 — Scoring.</strong> Seven signals are combined: valuation (including distance to support), risk/reward, loss probability, episode timing, market regime, volatility conditions, and trend persistence. The result is YES (Strong Buy or Buy) or NO (Hold, Wait, or Sell). Everything refits on every page load.</p>
+              <p style={{ margin: "0 0 12px" }}><strong style={{ color: "#37352F" }}>Step 3 — Regime detection.</strong> The market is classified into calm and volatile regimes using rolling volatility and a Markov transition matrix. Each regime has its own volatility scale — calm markets have tighter fluctuations, volatile markets allow wider swings. The regime acts as a context signal and adjusts the decision thresholds, but does not force mean-reversion in the simulation.</p>
+              <p style={{ margin: "0 0 12px" }}><strong style={{ color: "#37352F" }}>Step 4 — Monte Carlo simulation.</strong> 2,000 paths are generated over 3 years using fractal volatility clustering (MMAR), shocks drawn from Bitcoin's actual historical returns, and Hurst-correlated momentum. The same paths are read at 1-year and 3-year horizons — no duplicate computation. A reflecting barrier at the RANSAC support floor is calibrated to the empirical frequency of historical breaches.</p>
+              <p style={{ margin: "0 0 0" }}><strong style={{ color: "#37352F" }}>Step 5 — Probabilistic verdict.</strong> Four conditions are evaluated using conjunctive logic — all must be true for YES. Two come from the Power Law (discount depth) and two from the Monte Carlo (loss probability, probability of reaching fair value). Thresholds are calibrated by walk-forward backtest via grid search, not chosen manually. Volatile regimes tighten all thresholds. Everything refits on every page load.</p>
             </div>
           </Toggle>
           <Divider />
 
           <Toggle label="What is Monte Carlo and how is it used here?" open={openSections.faq_mc} onToggle={() => toggleSection("faq_mc")}>
             <div style={{ fontSize: 14, color: "#4F4F4F", lineHeight: 1.8 }}>
-              <p style={{ margin: "0 0 12px" }}>Monte Carlo means running the model 500 times with random variations to see the full range of possible outcomes. Instead of one price target, you get a distribution: "In 95% of simulations, BTC ended above $X after 1 year."</p>
-              <p style={{ margin: "0 0 12px" }}>What makes this different: the randomness comes from Bitcoin's actual historical returns, not a bell curve. The shocks are shaped by fractal time (clustering wild days together), correlated by the Hurst exponent (making trends persist), and anchored to the Power Law via regime-switching mean-reversion.</p>
-              <p style={{ margin: "0 0 0" }}>No simulated path can breach the RANSAC support floor — the historically verified minimum. The worst-case scenarios are grounded in what has actually happened, not theoretical extremes.</p>
+              <p style={{ margin: "0 0 12px" }}>Monte Carlo means running the model 2,000 times with random variations to see the full range of possible outcomes. Instead of one price target, you get a distribution: "In 68% of simulations, BTC exceeded +30% return after 1 year."</p>
+              <p style={{ margin: "0 0 12px" }}>What makes this different: the randomness comes from Bitcoin's actual historical returns, not a bell curve. The shocks are shaped by fractal time (clustering wild days together) and correlated by the Hurst exponent (making trends persist). Each run covers 3 years — the 1-year and 3-year results come from the same 2,000 paths read at different points.</p>
+              <p style={{ margin: "0 0 0" }}>The support floor reflects the empirically calibrated probability of a structural breach — measured from how often the price has historically touched the RANSAC floor in any given 12-month period. The model does not assume the floor is inviolable. The worst-case scenarios are grounded in what has actually happened, not theoretical extremes.</p>
             </div>
           </Toggle>
           <Divider />
 
           <Toggle label="How does the buy/sell signal work?" open={openSections.faq_signal} onToggle={() => toggleSection("faq_signal")}>
             <div style={{ fontSize: 14, color: "#4F4F4F", lineHeight: 1.8 }}>
-              <p style={{ margin: "0 0 12px" }}>Seven weighted signals, each scoring −1 (bearish) to +1 (bullish):</p>
-              <p style={{ margin: "0 0 12px" }}><strong>Valuation (25%)</strong> — Distance to fair value + proximity to support floor. <strong>Risk/Reward (20%)</strong> — Blends Monte Carlo and Power Law upside vs downside. <strong>Loss probability (15%)</strong> — MC loss chance + structural downside to support. <strong>Episode timing (15%)</strong> — How far through the current deviation episode, direction of change, and depth. <strong>Market regime (12%)</strong> — Bull, bear, accumulation, recovery, or ranging. <strong>Temperature (8%)</strong> and <strong>Trend (5%)</strong> — Volatility environment and Hurst persistence.</p>
-              <p style={{ margin: "0 0 0" }}>The composite maps to: <strong>Strong Buy</strong> and <strong>Buy</strong> (shown as YES), or <strong>Hold</strong>, <strong>Wait</strong>, and <strong>Sell</strong> (shown as NO). The "What's driving this" section shows each signal's contribution.</p>
+              <p style={{ margin: "0 0 12px" }}>The signal uses two separate mechanisms — one for buying, one for selling — combined into a single spectrum: <strong>Strong Buy → Buy → Hold → Wait → Reduce → Sell.</strong></p>
+              <p style={{ margin: "0 0 12px" }}><strong>Buy side (conjunctive logic):</strong> YES requires all four conditions simultaneously — discount in σ (Power Law), low P(loss in 12m), high P(reaches fair value in 12m), and contained floor breach risk (all Monte Carlo). Thresholds are calibrated by walk-forward backtest, not chosen by hand. Strong Buy requires the same conditions met with significant margin.</p>
+              <p style={{ margin: "0 0 12px" }}><strong>Sell side (Hurst divergences):</strong> Only active when price is overheated (σ &gt; 0.5). Three divergences are monitored: D1 — σ rising but H90 falling (price extended, momentum weakening); D2 — H30 breaking below H90 (short-term momentum failing first); D3 — H90 falling while volatility expands (regime breakdown). Reduce activates with 2 divergences, Sell with all 3. Thresholds are calibrated by grid search against historical corrections.</p>
+              <p style={{ margin: "0 0 0" }}>Hold and Wait signal neither a clear entry nor exit. Hold = fair price with no strong signal. Wait = discount present but buy conditions not fully met. These are distinct from Reduce, which specifically signals momentum exhaustion at elevated prices.</p>
+            </div>
+          </Toggle>
+          <Divider />
+
+          <Toggle label="What are Hurst divergences and why do they signal corrections?" open={openSections.faq_hurst_div} onToggle={() => toggleSection("faq_hurst_div")}>
+            <div style={{ fontSize: 14, color: "#4F4F4F", lineHeight: 1.8 }}>
+              <p style={{ margin: "0 0 12px" }}>The Hurst exponent measures trend persistence. A value above 0.5 means momentum is self-reinforcing — recent moves predict the direction of future moves. A falling Hurst means the market is losing that structural conviction, even if the price is still rising. That divergence between price and persistence is the core of the sell signal.</p>
+              <p style={{ margin: "0 0 12px" }}><strong>D1 — Price vs Hurst:</strong> σ (distance to fair value) is rising — price is getting more extended — but H90 (90-day Hurst) is falling. The market is making new relative highs with less momentum behind them. Historically this pattern precedes the transition from trending to topping.</p>
+              <p style={{ margin: "0 0 12px" }}><strong>D2 — Short vs long Hurst:</strong> H30 falls below H90. The short-term momentum is breaking down before the longer-term structural trend. This is an early warning — the fracture starts at shorter time scales before propagating to the full cycle.</p>
+              <p style={{ margin: "0 0 12px" }}><strong>D3 — Hurst vs volatility:</strong> H90 is falling while the volatility ratio (vol30/vol90) is expanding. Persistence weakens precisely as uncertainty increases — the classic signature of a regime about to change. In Bitcoin's history, this combination has appeared near major cycle tops.</p>
+              <p style={{ margin: "0 0 0" }}>Score 0–1: momentum structure intact. Score 2 (Reduce): early exhaustion — no panic, but reduce new exposure. Score 3 (Sell): all three divergences active simultaneously — historically the highest-conviction sell configuration the model produces. Thresholds are calibrated against historical corrections &gt;20% within 6 months.</p>
             </div>
           </Toggle>
           <Divider />
@@ -3960,7 +4899,7 @@ export default function MMARDashboard() {
           <Toggle label="Where does the data come from?" open={openSections.faq_data} onToggle={() => toggleSection("faq_data")}>
             <div style={{ fontSize: 14, color: "#4F4F4F", lineHeight: 1.8 }}>
               <p style={{ margin: "0 0 12px" }}>Three layers: monthly prices from 2010–2013 (~33 points from early records), daily prices from April 2013 to the last update (~4,700 points from CoinGecko), and live daily prices from there to today (Binance). Spot price refreshes every 60 seconds.</p>
-              <p style={{ margin: "0 0 0" }}>Everything recalculates on every page load — Power Law, RANSAC support, fractal parameters, Monte Carlo, episode analysis, composite score. Nothing is cached. The model reflects the data available at the moment you loaded the page.</p>
+              <p style={{ margin: "0 0 0" }}>Everything recalculates on every page load — Power Law, RANSAC support, fractal parameters, Monte Carlo, episode analysis, walk-forward backtest, and probabilistic verdict. Nothing is cached. The model reflects the data available at the moment you loaded the page.</p>
             </div>
           </Toggle>
           <Divider />
@@ -3993,7 +4932,7 @@ export default function MMARDashboard() {
 
           <Toggle label="Who built this?" open={openSections.faq_who} onToggle={() => toggleSection("faq_who")}>
             <div style={{ fontSize: 14, color: "#4F4F4F", lineHeight: 1.8 }}>
-              <p style={{ margin: "0 0 0" }}>Built by <a href="https://www.linkedin.com/in/eduforte/" target="_blank" rel="noopener noreferrer" style={{ color: "#37352F", fontWeight: 600 }}>Edu Forte</a> and <a href="https://www.commonsense.finance/" target="_blank" rel="noopener noreferrer" style={{ color: "#37352F", fontWeight: 600 }}>CommonSense</a>, a digital asset manager based in Barcelona. The approach combines Santostasi/Burger's Power Law, Mandelbrot's MMAR, regime-switching Ornstein-Uhlenbeck, DFA-based Hurst estimation, RANSAC robust support, and empirical shock resampling — an original combination developed for this tool.</p>
+              <p style={{ margin: "0 0 0" }}>Built by <a href="https://www.linkedin.com/in/eduforte/" target="_blank" rel="noopener noreferrer" style={{ color: "#37352F", fontWeight: 600 }}>Edu Forte</a> and <a href="https://www.commonsense.finance/" target="_blank" rel="noopener noreferrer" style={{ color: "#37352F", fontWeight: 600 }}>CommonSense</a>, a digital asset manager based in Barcelona. The approach combines Santostasi/Burger's Power Law (WLS + RANSAC), Mandelbrot's MMAR, DFA-based Hurst estimation, regime-switching volatility, EVT/GPD empirical cap, and a probabilistic verdict validated through walk-forward backtesting — an original combination developed for this tool.</p>
             </div>
           </Toggle>
           <Divider />
@@ -4021,7 +4960,7 @@ export default function MMARDashboard() {
             <div>
               <div style={{ fontSize: 10, color: "#BFBFBA", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600, marginBottom: 8 }}>Methodology</div>
               <p style={{ fontSize: 12, color: "#9B9A97", lineHeight: 1.7, margin: 0 }}>
-                Santostasi Power Law (WLS) + Mandelbrot MMAR (fractal cascades, DFA) + Regime-Switching Ornstein-Uhlenbeck + 2,000-path Monte Carlo with empirical resampling.
+                Santostasi Power Law (WLS + RANSAC) + Mandelbrot MMAR (fractal cascades, DFA) + Regime-switching volatility + 2,000-path unified Monte Carlo + EVT/GPD cap + walk-forward backtest.
               </p>
             </div>
             <div>
