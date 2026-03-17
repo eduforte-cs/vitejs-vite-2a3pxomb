@@ -926,7 +926,6 @@ function runWalkForwardBacktest(prices, a, b, resMean, resStd, resFloor, evtCap,
   const sellBacktest = sellResults.length >= 3 ? {
     thresholds: bestSellThresholds,
     metrics: bestSellMetrics ? (() => {
-      // Métricas adicionales: avgDaysToCorrection, maxDrawdown
       const sdT = bestSellThresholds.sigmaDelta;
       const hdT = bestSellThresholds.hDelta;
       const vrT = bestSellThresholds.volRatio;
@@ -935,23 +934,27 @@ function runWalkForwardBacktest(prices, a, b, resMean, resStd, resFloor, evtCap,
       const d3f = r => r.h90delta < hdT && r.volRatio > vrT;
       const scoreF = r => [d1f(r), d2f(r), d3f(r)].filter(Boolean).length;
 
-      const sell3 = sellResults.filter(r => scoreF(r) === 3);
-      const sell2 = sellResults.filter(r => scoreF(r) === 2);
+      const sell3    = sellResults.filter(r => scoreF(r) === 3);
+      const sell2    = sellResults.filter(r => scoreF(r) === 2);
+      const noSignal = sellResults.filter(r => scoreF(r) <= 1); // overheated sin divergencias
 
-      // maxDrawdown: peor retorno observado a 6m después de señal
       const maxDrawdown = arr => arr.length > 0 ? +Math.min(...arr.map(r => r.ret6m)).toFixed(1) : null;
+      const avgRet      = arr => arr.length > 0 ? +(arr.reduce((s,r)=>s+r.ret6m,0)/arr.length).toFixed(1) : null;
+      const pct20       = arr => arr.length > 0 ? +(arr.filter(r=>r.isGoodSell).length/arr.length*100).toFixed(1) : null;
 
-      // avgDaysToCorrection: aproximado — si ret6m < 0, asumimos corrección a mitad del período como proxy
-      // (no tenemos granularidad diaria en el backtest, esta es una estimación conservadora)
-      const avgDaysEst = arr => {
-        const correcting = arr.filter(r => r.isGoodSell);
-        return correcting.length > 0 ? "< 90d (est.)" : null;
-      };
+      // Delta: diferencia entre Sell y baseline — cuánto añade la señal
+      const sellAvg    = avgRet(sell3);
+      const baseAvg    = avgRet(sellResults); // todos los overheated
+      const signalDelta = (sellAvg != null && baseAvg != null)
+        ? +(baseAvg - sellAvg).toFixed(1) // positivo = sell tuvo peores retornos que baseline
+        : null;
 
       return {
         ...bestSellMetrics,
-        sell:   { ...bestSellMetrics.sell,   maxDrawdown: maxDrawdown(sell3), daysEst: avgDaysEst(sell3) },
-        reduce: { ...bestSellMetrics.reduce, maxDrawdown: maxDrawdown(sell2), daysEst: avgDaysEst(sell2) },
+        sell:      { ...bestSellMetrics.sell,   maxDrawdown: maxDrawdown(sell3), pct20: pct20(sell3)    },
+        reduce:    { ...bestSellMetrics.reduce, maxDrawdown: maxDrawdown(sell2), pct20: pct20(sell2)    },
+        noSignal:  { n: noSignal.length, avgRet6m: avgRet(noSignal), maxDrawdown: maxDrawdown(noSignal), pct20: pct20(noSignal) },
+        signalDelta, // pp que el sell underperformó vs baseline (positivo = señal útil)
       };
     })() : null,
     nOverheat: sellResults.length,
@@ -3839,31 +3842,47 @@ export default function MMARDashboard() {
                 {/* Sell signal validation */}
                 {backtestResults.sellBacktest?.metrics && (
                   <div style={{ marginBottom: 12 }}>
-                    <div style={{ fontSize: 10, color: "#BFBFBA", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600, marginBottom: 8 }}>Sell warning signal accuracy — 6 months after signal</div>
+                    <div style={{ fontSize: 10, color: "#BFBFBA", textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600, marginBottom: 8 }}>Do the sell warnings add value over plain overheating?</div>
+
+                    {/* Delta headline */}
+                    {backtestResults.sellBacktest.metrics.signalDelta != null && (
+                      <div style={{ background: backtestResults.sellBacktest.metrics.signalDelta > 5 ? "#0f2318" : "#1a1a0a", border: `1px solid ${backtestResults.sellBacktest.metrics.signalDelta > 5 ? "#1a3a28" : "#3a3a1a"}`, borderRadius: 8, padding: "12px 14px", marginBottom: 12 }}>
+                        <div style={{ fontSize: 13, color: "#e8e5e0", lineHeight: 1.7 }}>
+                          {backtestResults.sellBacktest.metrics.signalDelta > 5
+                            ? <>When the sell signal fired, Bitcoin returned <strong style={{ color: "#f87171" }}>{backtestResults.sellBacktest.metrics.sell?.avgRet6m != null ? (backtestResults.sellBacktest.metrics.sell.avgRet6m > 0 ? "+" : "") + backtestResults.sellBacktest.metrics.sell.avgRet6m + "%" : "–"}</strong> over the following 6 months — vs <strong style={{ color: "#9B9A97" }}>{backtestResults.sellBacktest.metrics.allOverheat?.avgRet6m != null ? (backtestResults.sellBacktest.metrics.allOverheat.avgRet6m > 0 ? "+" : "") + backtestResults.sellBacktest.metrics.allOverheat.avgRet6m + "%" : "–"}</strong> for all overheated periods. The divergences added <strong style={{ color: "#4ade80" }}>{backtestResults.sellBacktest.metrics.signalDelta}pp</strong> of signal beyond simply being overheated.</>
+                            : <>When the sell signal fired, returns were not significantly worse than the overheated baseline (<strong style={{ color: "#9B9A97" }}>{backtestResults.sellBacktest.metrics.signalDelta}pp difference</strong>). The divergences may not add meaningful signal beyond plain overheating — or the sample is too small to tell.</>
+                          }
+                          {backtestResults.sellBacktest.note && <span style={{ color: "#a0a010" }}> {backtestResults.sellBacktest.note}</span>}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Comparison table */}
                     <div style={{ border: "1px solid #E8E5E0", borderRadius: 6, overflow: "hidden" }}>
                       <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
                         <thead>
                           <tr style={{ background: "#F7F6F3" }}>
-                            {["Signal", "Times seen", "Fell >20%", "Avg return", "Worst"].map(h => (
-                              <th key={h} style={{ padding: "7px 10px", textAlign: h === "Signal" ? "left" : "right", color: "#9B9A97", fontWeight: 500, fontSize: 11, borderBottom: "1px solid #E8E5E0" }}>{h}</th>
+                            {["When…", "Times seen", "Fell >20%", "Avg return", "Worst"].map(h => (
+                              <th key={h} style={{ padding: "7px 10px", textAlign: h === "When…" ? "left" : "right", color: "#9B9A97", fontWeight: 500, fontSize: 11, borderBottom: "1px solid #E8E5E0" }}>{h}</th>
                             ))}
                           </tr>
                         </thead>
                         <tbody>
                           {[
-                            { label: "Sell (3 warnings)",  data: backtestResults.sellBacktest.metrics.sell,        color: "#EB5757" },
-                            { label: "Reduce (2 warnings)", data: backtestResults.sellBacktest.metrics.reduce,      color: "#F2994A" },
-                            { label: "No warning (base)",   data: backtestResults.sellBacktest.metrics.allOverheat, color: "#9B9A97" },
-                          ].map(({ label, data, color }) => {
+                            { label: "Sell signal (3 warnings)", data: backtestResults.sellBacktest.metrics.sell,      color: "#EB5757", isBaseline: false },
+                            { label: "Reduce signal (2 warnings)", data: backtestResults.sellBacktest.metrics.reduce,  color: "#F2994A", isBaseline: false },
+                            { label: "Overheated, no warning",    data: backtestResults.sellBacktest.metrics.noSignal, color: "#9B9A97", isBaseline: true  },
+                            { label: "All overheated (baseline)", data: backtestResults.sellBacktest.metrics.allOverheat, color: "#BFBFBA", isBaseline: true },
+                          ].map(({ label, data, color, isBaseline }) => {
                             if (!data || data.n === 0) return null;
                             return (
-                              <tr key={label} style={{ borderBottom: "1px solid #F1F1EF" }}>
-                                <td style={{ padding: "8px 10px", fontWeight: 600, color }}>{label}</td>
+                              <tr key={label} style={{ borderBottom: "1px solid #F1F1EF", background: isBaseline ? "#FAFAF8" : "#FFF" }}>
+                                <td style={{ padding: "8px 10px", fontWeight: isBaseline ? 400 : 600, color, fontStyle: isBaseline ? "italic" : "normal" }}>{label}</td>
                                 <td style={{ padding: "8px 10px", textAlign: "right", color: "#9B9A97", fontFamily: "'DM Mono', monospace" }}>{data.n}</td>
-                                <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'DM Mono', monospace", color: data.precision > 60 ? "#27AE60" : data.precision > 40 ? "#F2994A" : "#EB5757" }}>
-                                  {data.precision != null ? `${data.precision}%` : "—"}
+                                <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'DM Mono', monospace", color: parseFloat(data.pct20) > 50 ? "#EB5757" : "#9B9A97" }}>
+                                  {data.pct20 != null ? `${data.pct20}%` : "—"}
                                 </td>
-                                <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'DM Mono', monospace", color: data.avgRet6m < 0 ? "#27AE60" : "#EB5757" }}>
+                                <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'DM Mono', monospace", color: data.avgRet6m < 0 ? "#27AE60" : data.avgRet6m > 20 ? "#EB5757" : "#9B9A97" }}>
                                   {data.avgRet6m != null ? `${data.avgRet6m > 0 ? "+" : ""}${data.avgRet6m}%` : "—"}
                                 </td>
                                 <td style={{ padding: "8px 10px", textAlign: "right", fontFamily: "'DM Mono', monospace", color: "#EB5757", fontSize: 11 }}>
@@ -3876,8 +3895,7 @@ export default function MMARDashboard() {
                       </table>
                     </div>
                     <div style={{ fontSize: 11, color: "#BFBFBA", marginTop: 5, lineHeight: 1.5 }}>
-                      "Fell &gt;20%" = percentage of times Bitcoin dropped more than 20% within 6 months of the signal.
-                      {backtestResults.sellBacktest.note && <span style={{ color: "#F2994A" }}> {backtestResults.sellBacktest.note}</span>}
+                      "Fell &gt;20%" = % of times Bitcoin dropped more than 20% within 6 months. The key comparison is Sell signal vs "Overheated, no warning" — that delta shows what the divergences add beyond plain overheating.
                     </div>
                   </div>
                 )}
