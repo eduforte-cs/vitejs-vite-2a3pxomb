@@ -5,7 +5,7 @@ import Landing from './Landing.jsx';
 import MMARDashboard from './App.jsx';
 
 function Shell() {
-  const [session, setSession] = useState(undefined);
+  const [session, setSession] = useState(true);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
