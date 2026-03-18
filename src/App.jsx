@@ -2717,17 +2717,25 @@ export default function MMARDashboard() {
       try {
         const { spot } = await fetchSpotPrice();
         if (!spot) { setRefreshing(false); return; }
-        const { a, b, resMean, resStd, resFloor, H, lambda2, ouRegimes, t0, resReturns, evtCap, floorBreakProb } = d;
+        const { a, b, resMean, resStd, resFloor, H, lambda2, ouRegimes, t0, resReturns, evtCap, floorBreakProb, sigmaChart: prevSigmaChart } = d;
         const tNow = daysSinceGenesis(new Date().toISOString().slice(0, 10));
         const plNow = plPrice(a, b, tNow);
         const newResidual = Math.log(spot) - Math.log(plNow);
         const newSigma = (newResidual - resMean) / resStd;
+
+        // Actualizar sigmaChart con el punto de hoy para que episodeDays avance
+        const todayStr = new Date().toISOString().slice(0, 7); // YYYY-MM
+        const updatedSigmaChart = prevSigmaChart ? [
+          ...prevSigmaChart.filter(p => p.date !== todayStr),
+          { date: todayStr, sigma: +newSigma.toFixed(3), price: +spot.toFixed(0), fair: +plNow.toFixed(0) },
+        ] : prevSigmaChart;
+
         // MC unificado: un solo run 3Y, leer días 365 y 1095
         const N3Y = 365 * 3;
         const pathsUnified = simulatePathsPL(200, N3Y, H, lambda2, resStd, resMean, a, b, tNow, ouRegimes, newResidual, resReturns, resFloor, evtCap, floorBreakProb);
         const pct  = computePercentiles(pathsUnified, 365);
         const pct3y = computePercentiles(pathsUnified, N3Y);
-        setD(prev => ({ ...prev, S0: spot, t0: tNow, plToday: plNow, sigmaFromPL: newSigma, currentResidual: newResidual, percentiles: pct, percentiles3y: pct3y, pl1y: +plPrice(a, b, tNow + 365).toFixed(0), pl2y: +plPrice(a, b, tNow + 730).toFixed(0), pl3y: +plPrice(a, b, tNow + 365 * 3).toFixed(0) }));
+        setD(prev => ({ ...prev, S0: spot, t0: tNow, plToday: plNow, sigmaFromPL: newSigma, currentResidual: newResidual, percentiles: pct, percentiles3y: pct3y, pl1y: +plPrice(a, b, tNow + 365).toFixed(0), pl2y: +plPrice(a, b, tNow + 730).toFixed(0), pl3y: +plPrice(a, b, tNow + 365 * 3).toFixed(0), sigmaChart: updatedSigmaChart }));
         setLastRefresh(new Date());
       } catch (e) { console.warn("Refresh:", e); }
       setRefreshing(false);

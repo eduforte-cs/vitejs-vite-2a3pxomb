@@ -1,27 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React from 'react';
 import ReactDOM from 'react-dom/client';
-import { supabase } from './supabase.js';
-import Landing from './Landing.jsx';
 import MMARDashboard from './App.jsx';
 
+// BYPASS — reemplazar main.jsx con este archivo para desarrollo local
+// Restaurar main.jsx original antes de deployar
 function Shell() {
-  const [session, setSession] = useState(undefined);
-
-  useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-    });
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session);
-    });
-    return () => subscription.unsubscribe();
-  }, []);
-
-  if (session === undefined) return <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', fontFamily: 'sans-serif', color: '#9B9A97' }}>Loading...</div>;
-  if (!session) return <Landing />;
-  return <MMARDashboard session={session} />;
+  return <MMARDashboard session={null} />;
 }
 
 ReactDOM.createRoot(document.getElementById('root')).render(
