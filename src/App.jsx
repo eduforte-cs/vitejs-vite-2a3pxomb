@@ -3149,18 +3149,25 @@ export default function MMARDashboard() {
 
   // Find episode start: walk backward through sigmaChart to find when σ crossed the zone threshold
   let episodeStart = null, episodeDays = 0, episodePeak = sig;
+  const todayMs = Date.now();
   if (sigmaChart?.length > 1 && Math.abs(zoneThreshold) > 0) {
     for (let i = sigmaChart.length - 1; i >= 0; i--) {
       const s = sigmaChart[i].sigma;
       if ((zoneThreshold < 0 && s > zoneThreshold) || (zoneThreshold > 0 && s < zoneThreshold)) {
         const crossPoint = sigmaChart[Math.min(i + 1, sigmaChart.length - 1)];
         episodeStart = crossPoint.fullDate || crossPoint.date;
-        episodeDays = Math.round((sigmaChart.length - 1 - i) * 5);
+        // Usar diferencia real de fechas — mucho más preciso que índice × 5
+        const startMs = new Date(episodeStart).getTime();
+        episodeDays = Math.round((todayMs - startMs) / 86400000);
         break;
       }
       episodePeak = zoneThreshold < 0 ? Math.min(episodePeak, s) : Math.max(episodePeak, s);
     }
-    if (!episodeStart) { episodeStart = sigmaChart[0]?.date; episodeDays = Math.round(sigmaChart.length * 5); }
+    if (!episodeStart) {
+      const firstPoint = sigmaChart[0];
+      episodeStart = firstPoint.fullDate || firstPoint.date;
+      episodeDays = Math.round((todayMs - new Date(episodeStart).getTime()) / 86400000);
+    }
   }
 
   // σ trend: is deviation improving (toward FV) or worsening (away from FV)?
@@ -4793,11 +4800,7 @@ export default function MMARDashboard() {
                       </div>
                       {episodeDays > 0 && (
                         <div style={{ fontSize: 10, color: "#BFBFBA", marginTop: 1, fontFamily: "'DM Mono', monospace" }}>
-                          {/* Cross-check: today minus episodeDays */}
-                          {(() => {
-                            const computed = new Date(Date.now() - episodeDays * 86400000);
-                            return `≈ ${computed.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}`;
-                          })()}
+                          {episodeDays}d from today · exact
                         </div>
                       )}
                     </div>
