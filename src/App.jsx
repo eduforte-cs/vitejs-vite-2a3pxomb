@@ -2725,9 +2725,10 @@ export default function MMARDashboard() {
 
         // Actualizar sigmaChart con el punto de hoy para que episodeDays avance
         const todayStr = new Date().toISOString().slice(0, 7); // YYYY-MM
+        const todayFull = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
         const updatedSigmaChart = prevSigmaChart ? [
           ...prevSigmaChart.filter(p => p.date !== todayStr),
-          { date: todayStr, sigma: +newSigma.toFixed(3), price: +spot.toFixed(0), fair: +plNow.toFixed(0) },
+          { date: todayStr, fullDate: todayFull, sigma: +newSigma.toFixed(3), price: +spot.toFixed(0), fair: +plNow.toFixed(0) },
         ] : prevSigmaChart;
 
         // MC unificado: un solo run 3Y, leer días 365 y 1095
@@ -2929,7 +2930,7 @@ export default function MMARDashboard() {
         if (i % 5 !== 0 && i !== prices.length - 1) return null;
         const t = daysSinceGenesis(p.date); const plV = plPrice(a, b, t);
         const res = Math.log(p.price) - Math.log(plV);
-        return { date: p.date.slice(0, 7), sigma: +((res - resMean) / resStd).toFixed(3), price: +p.price.toFixed(0), fair: +plV.toFixed(0) };
+        return { date: p.date.slice(0, 7), fullDate: p.date, sigma: +((res - resMean) / resStd).toFixed(3), price: +p.price.toFixed(0), fair: +plV.toFixed(0) };
       }).filter(Boolean);
 
       const plForecast365 = Array.from({ length: 73 }, (_, i) => ({ t: i * 5, pl: +plPrice(a, b, t0 + i * 5).toFixed(0) }));
@@ -3152,7 +3153,8 @@ export default function MMARDashboard() {
     for (let i = sigmaChart.length - 1; i >= 0; i--) {
       const s = sigmaChart[i].sigma;
       if ((zoneThreshold < 0 && s > zoneThreshold) || (zoneThreshold > 0 && s < zoneThreshold)) {
-        episodeStart = sigmaChart[Math.min(i + 1, sigmaChart.length - 1)].date;
+        const crossPoint = sigmaChart[Math.min(i + 1, sigmaChart.length - 1)];
+        episodeStart = crossPoint.fullDate || crossPoint.date;
         episodeDays = Math.round((sigmaChart.length - 1 - i) * 5);
         break;
       }
@@ -3177,14 +3179,14 @@ export default function MMARDashboard() {
   //   Overheated: day 94 separates spikes (33-94d) from bull runs (350-508d)
   //   Depth correlation: peaks beyond ±1.0σ → long episodes; shallower → short
   const episodeHistory = sig < -1.0
-    ? { durations: [93, 229, 462, 859], branchDay: 229, shortAvg: 161, longAvg: 660, label: "deeply undervalued", deepThreshold: -1.2 }
+    ? { durations: [93, 229, 462, 859], branchDay: 229, shortAvg: 161, longAvg: 660, median: 346, label: "deeply undervalued", deepThreshold: -1.2 }
     : sig < -0.5
-    ? { durations: [74, 168, 233, 608, 870], branchDay: 233, shortAvg: 158, longAvg: 739, label: "discount", deepThreshold: -1.0 }
+    ? { durations: [74, 168, 233, 608, 870], branchDay: 233, shortAvg: 158, longAvg: 739, median: 233, label: "discount", deepThreshold: -1.0 }
     : sig > 1.0
-    ? { durations: [64, 332, 397, 492], branchDay: 64, shortAvg: 64, longAvg: 407, label: "bubble", deepThreshold: 1.5 }
+    ? { durations: [64, 332, 397, 492], branchDay: 64, shortAvg: 64, longAvg: 407, median: 365, label: "bubble", deepThreshold: 1.5 }
     : sig > 0.5
-    ? { durations: [33, 64, 80, 94, 350, 423, 508], branchDay: 94, shortAvg: 67, longAvg: 427, label: "overheated", deepThreshold: 1.0 }
-    : { durations: [], branchDay: 0, shortAvg: 0, longAvg: 0, label: "at fair value", deepThreshold: 0 };
+    ? { durations: [33, 64, 80, 94, 350, 423, 508], branchDay: 94, shortAvg: 67, longAvg: 427, median: 94, label: "overheated", deepThreshold: 1.0 }
+    : { durations: [], branchDay: 0, shortAvg: 0, longAvg: 0, median: 0, label: "at fair value", deepThreshold: 0 };
 
   // Is this likely a short episode or a long one? Depth predicts.
   const isDeepEnough = sig < 0
@@ -3239,7 +3241,7 @@ export default function MMARDashboard() {
   } else if (sig < 0) {
     // BELOW FV
     if (pctThrough < 25) {
-      episodeCallout = `BTC has been in ${episodeHistory.label} territory for ${episodeDays} days. The ${nEps} previous episodes of this type lasted ${durRange} days. It's early — ${nLonger} of ${nEps} episodes lasted longer than this.${sigWorsening ? " The price is still drifting further from fair value, suggesting the bottom may not be in yet." : ""}${sigImproving ? " However, The price is already moving back toward fair value — if this holds, it resembles the shorter episodes (${episodeHistory.shortAvg}d avg)." : ""}`;
+      episodeCallout = `BTC has been in ${episodeHistory.label} territory for ${episodeDays} days. The ${nEps} previous episodes of this type lasted ${durRange} days. It's early — ${nLonger} of ${nEps} episodes lasted longer than this.${sigWorsening ? " The price is still drifting further from fair value, suggesting the bottom may not be in yet." : ""}${sigImproving ? ` However, the price is already moving back toward fair value — if this holds, it resembles the shorter episodes (${episodeHistory.shortAvg}d avg).` : ""}`;
     } else if (!pastBranchPoint) {
       episodeCallout = `Day ${episodeDays}: longer than ${nShorter} of ${nEps} historical episodes. The short bounces (${episodeHistory.shortAvg}d avg) would have ended by now${nShorter > 0 ? ` — ${nShorter} of ${nEps} did` : ""}. If we're still here past day ~${episodeHistory.branchDay}, the pattern matches a crypto winter (${episodeHistory.longAvg}d avg).${isDeepEnough ? ` The depth (${episodePeak.toFixed(2)}σ) suggests the longer scenario.` : ` The depth (${episodePeak.toFixed(2)}σ) is relatively shallow — still consistent with a bounce.`}`;
     } else if (pctThrough < 80) {
@@ -4784,7 +4786,20 @@ export default function MMARDashboard() {
                     </div>
                     <div style={{ textAlign: "right" }}>
                       <div style={{ fontSize: 11, color: "#9B9A97", marginBottom: 2 }}>{sig < 0 ? "Below" : "Above"} FV since</div>
-                      <div style={{ fontSize: 14, fontWeight: 600, color: "#37352F" }}>{episodeStart || "—"}</div>
+                      <div style={{ fontSize: 14, fontWeight: 600, color: "#37352F" }}>
+                        {episodeStart
+                          ? new Date(episodeStart).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
+                          : "—"}
+                      </div>
+                      {episodeDays > 0 && (
+                        <div style={{ fontSize: 10, color: "#BFBFBA", marginTop: 1, fontFamily: "'DM Mono', monospace" }}>
+                          {/* Cross-check: today minus episodeDays */}
+                          {(() => {
+                            const computed = new Date(Date.now() - episodeDays * 86400000);
+                            return `≈ ${computed.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}`;
+                          })()}
+                        </div>
+                      )}
                     </div>
                   </div>
                   {/* Status pills */}
